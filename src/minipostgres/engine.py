@@ -12,15 +12,18 @@ from types import TracebackType
 
 from minipostgres.catalog.catalog import Catalog
 from minipostgres.catalog.model import Column, IndexMetadata, TableMetadata
+from minipostgres.catalog.statistics import StatisticsStore
 from minipostgres.errors import BindError, ConstraintViolation, DatabaseClosed
 from minipostgres.executor.base import ExecutionContext, OutputSlot, collect
 from minipostgres.executor.factory import build_executor
 from minipostgres.index.btree import BTree
 from minipostgres.index.key import KeyCodec
+from minipostgres.maintenance.analyze import analyze_table
 from minipostgres.planner.physical import PlanExplanation, explain_plan
 from minipostgres.planner.planner import Planner
 from minipostgres.sql.binder import Binder
 from minipostgres.sql.bound import (
+    BoundAnalyze,
     BoundCreateIndex,
     BoundCreateTable,
     BoundDelete,
@@ -61,6 +64,7 @@ class Database:
     ) -> None:
         self._root = root
         self._catalog = catalog
+        self._statistics = StatisticsStore.open(root)
         self._disk = DiskManager.open(root)
         self._buffer_pool = BufferPool(self._disk, buffer_frames)
         self._accesses: dict[int, IndexedTableAccess] = {}
@@ -100,6 +104,11 @@ class Database:
         self._ensure_open()
         return self._catalog
 
+    @property
+    def statistics(self) -> StatisticsStore:
+        self._ensure_open()
+        return self._statistics
+
     def execute(self, sql: str) -> QueryResult:
         with self._lock:
             self._ensure_open()
@@ -109,6 +118,8 @@ class Database:
                 return self._create_table(bound)
             if isinstance(bound, BoundCreateIndex):
                 return self._create_index(bound)
+            if isinstance(bound, BoundAnalyze):
+                return self._analyze(bound)
             if isinstance(bound, BoundExplain):
                 return self._explain(bound)
             if isinstance(bound, (BoundSelect, BoundInsert, BoundUpdate, BoundDelete)):
@@ -254,6 +265,23 @@ class Database:
         binding = self._open_index_binding(metadata)
         source.add_index(binding)
         return QueryResult(command_tag="CREATE INDEX")
+
+    def _analyze(self, statement: BoundAnalyze) -> QueryResult:
+        tables = (
+            self._catalog.tables()
+            if statement.table is None
+            else (statement.table,)
+        )
+        for table in tables:
+            statistics = analyze_table(
+                table,
+                self._accesses[table.table_id],
+                page_count=self._disk.page_count(
+                    heap_relation(table.table_id)
+                ),
+            )
+            self._statistics.replace(statistics)
+        return QueryResult(command_tag="ANALYZE")
 
     def _open_index_binding(self, metadata: IndexMetadata) -> IndexBinding:
         table = self._catalog.table(metadata.table_id)
