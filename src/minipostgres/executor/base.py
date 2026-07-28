@@ -31,6 +31,11 @@ class ExecutionContext:
                 f"no table access registered for table {table_id}"
             ) from error
 
+    def register_table(self, table: TableAccess) -> None:
+        if table.table_id in self._tables:
+            raise ValueError(f"table access already registered: {table.table_id}")
+        self._tables[table.table_id] = table
+
 
 class Executor(ABC):
     """One demand-pull operator with an idempotent lifecycle."""
