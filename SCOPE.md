@@ -70,9 +70,26 @@ enforced under the single-process statement latch. Accepted single-column
 `PRIMARY KEY` and inline `UNIQUE` declarations create automatic unique B+Tree
 indexes. Composite constraints remain outside this phase.
 
+## Phase C
+
+Phase C adds:
+
+```text
+ANALYZE [table]
+durable exact table and column statistics
+fixed-point logical rewrites
+sequential versus B+Tree index scan costing
+nested-loop versus hash join costing
+connected inner-join ordering for two through four relations
+per-node EXPLAIN ANALYZE instrumentation
+```
+
+Costs are relative comparisons, not milliseconds. DML deliberately leaves
+statistics stale until the next explicit `ANALYZE`. Five or more joined
+relations retain source order.
+
 ## Accepted later phases
 
-- Phase C: statistics, index scans, costing, rewrites, join selection/order.
 - Phase D: transactions, snapshots, locks, MVCC, WAL, checkpoint, recovery.
 - Phase E: Vacuum, stable-slot reuse, compaction, HOT, differential and final
   acceptance.
