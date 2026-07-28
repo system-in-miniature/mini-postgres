@@ -66,8 +66,9 @@ clean close and restart
 ```
 
 The frozen index subset rejects NULL keys. Explicit unique B+Tree indexes are
-enforced under the single-process statement latch. Automatic indexes for
-`PRIMARY KEY`/inline `UNIQUE` metadata remain outside this phase.
+enforced under the single-process statement latch. Accepted single-column
+`PRIMARY KEY` and inline `UNIQUE` declarations create automatic unique B+Tree
+indexes. Composite constraints remain outside this phase.
 
 ## Accepted later phases
 

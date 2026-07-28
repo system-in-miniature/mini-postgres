@@ -64,7 +64,9 @@ Implemented:
 - persistent heap tables and page-based B+Trees with split, merge, point
   lookup, and range iteration;
 - `CREATE [UNIQUE] INDEX`, index maintenance for DML, clean restart, and
-  statement-local uniqueness rollback.
+  statement-local uniqueness rollback;
+- durable automatic unique indexes for accepted single-column `PRIMARY KEY`
+  and `UNIQUE` declarations.
 
 Phase B guarantees persistence across a clean close and restart. Crash recovery
 is deliberately not claimed yet: MVCC, WAL, checkpoints, recovery, Vacuum, and

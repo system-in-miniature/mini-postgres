@@ -37,7 +37,8 @@ differs in product scope and implementation.
 
 Phase B statements are serialized inside one process. Unique checks are
 statement-local and do not model PostgreSQL's speculative insertion,
-deferrable constraints, or concurrent index build.
+deferrable constraints, composite table constraints, NULL uniqueness options,
+or concurrent index build.
 
 Transactions, MVCC, locks, WAL recovery, Vacuum, and HOT are accepted later
 phases. Their goal is to expose PostgreSQL-shaped invariants, not reproduce

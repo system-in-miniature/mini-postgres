@@ -65,6 +65,8 @@
 - duplicate `(key, TID)` insertion is idempotent;
 - non-unique indexes may contain multiple TIDs for one key;
 - unique indexes reject a key already owned by another TID;
+- accepted single-column `PRIMARY KEY` and `UNIQUE` declarations create and
+  publish durable unique indexes with the table;
 - index search results are candidates and must be heap-rechecked by query
   execution once Phase C introduces index scans;
 - leaf links remain ordered across split, borrow, merge, and clean restart;
@@ -84,7 +86,7 @@
 | disk and buffer ownership | `tests/unit/storage/test_disk_manager.py`, `tests/unit/storage/test_buffer_pool.py` |
 | persistent heap | `tests/integration/test_heap_table.py`, `tests/property/test_heap_table_model.py` |
 | ordered keys and persistent B+Tree | `tests/property/test_key_order.py`, `tests/unit/index/`, `tests/integration/test_btree_restart.py` |
-| engine restart and unique index publication | `tests/integration/test_engine_heap_restart.py`, `tests/integration/test_create_index.py`, `tests/contract/test_unique_index.py` |
+| engine restart and unique index publication | `tests/integration/test_engine_heap_restart.py`, `tests/integration/test_create_index.py`, `tests/contract/test_unique_index.py`, `tests/contract/test_schema_unique_constraints.py` |
 | Volcano operator behavior | `tests/unit/executor/test_query_operators.py` |
 | validated modifications | `tests/unit/executor/test_modify_operators.py` |
 | public SQL loop | `tests/integration/test_query_loop.py` |
