@@ -140,6 +140,11 @@ class Binder:
         alias = reference.alias or reference.name
         normalized_names = {alias.casefold()}
         for entry in self._scope:
+            if entry.table.metadata.table_id == metadata.table_id:
+                raise BindError(
+                    "self-joins are not supported because relation aliases "
+                    "do not yet have distinct runtime identities"
+                )
             if entry.visible_names & normalized_names:
                 raise BindError(f"duplicate table or alias: {alias}")
         table = BoundTable(metadata, alias)

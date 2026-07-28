@@ -21,7 +21,8 @@ def test_phase_e_vacuum_hot_and_restart_closure(tmp_path: Path) -> None:
         access = database._accesses[1]
         key = KeyCodec((DataType.INT64,)).encode((1,))
         root_tid = access.indexes[0].tree.search(key)[0]
-        database.execute("UPDATE users SET age = 21 WHERE id = 1")
+        for age in (21, 22, 23):
+            database.execute(f"UPDATE users SET age = {age} WHERE id = 1")
         assert access.indexes[0].tree.search(key) == (root_tid,)
         assert reader.execute("SELECT age FROM users WHERE id = 1").rows == (
             (20,),
@@ -36,10 +37,10 @@ def test_phase_e_vacuum_hot_and_restart_closure(tmp_path: Path) -> None:
         assert maintenance is not None
         assert maintenance.hot_versions_pruned >= 1
         assert database.execute("SELECT age FROM users WHERE id = 1").rows == (
-            (21,),
+            (23,),
         )
 
     with Database.open(tmp_path) as reopened:
         assert reopened.execute(
             "SELECT id, age, name FROM users WHERE id = 1"
-        ).rows == ((1, 21, "alice"),)
+        ).rows == ((1, 23, "alice"),)
