@@ -46,11 +46,18 @@
 ## Statistics and planning
 
 - `ANALYZE` publishes one complete immutable table-statistics snapshot;
+- statistics survive restart and remain unchanged after DML until another
+  `ANALYZE`;
 - MCV ordering and equi-depth histogram construction are deterministic;
 - every selectivity estimate is a probability and missing statistics do not
   make planning fail;
+- an unsupported predicate shape uses selectivity `1/3`;
+- equality uses MCV frequency or residual mass per residual distinct value;
+- range estimates combine matching MCVs and histogram interpolation;
+- `NOT`, `AND`, and `OR` use the frozen complement/independence formulas;
 - cost values are relative units and are never wall-clock predictions;
 - a sequential scan wins deterministic cost ties;
+- a nested-loop join wins deterministic join-cost ties;
 - an index scan treats index entries as candidates and rechecks the full
   predicate against the fetched heap tuple;
 - hash joins retain duplicate multiplicity and residual ON predicates;
@@ -106,11 +113,10 @@
 | Volcano operator behavior | `tests/unit/executor/test_query_operators.py` |
 | validated modifications | `tests/unit/executor/test_modify_operators.py` |
 | public SQL loop | `tests/integration/test_query_loop.py` |
-| structured EXPLAIN and cleanup | `tests/contract/test_explain.py`, `tests/integration/test_executor_cleanup.py` |
+| structured EXPLAIN and cleanup | `tests/contract/test_explain.py`, `tests/contract/test_explain_analyze.py`, `tests/integration/test_executor_cleanup.py`, `tests/integration/test_instrumentation_cleanup.py` |
 | statistics and selectivity | `tests/contract/test_analyze.py`, `tests/unit/planner/test_selectivity.py`, `tests/property/test_selectivity_bounds.py` |
 | scan and join choices | `tests/unit/planner/test_scan_choice.py`, `tests/unit/planner/test_join_choice.py`, `tests/unit/planner/test_join_order.py` |
 | optimized-result semantics | `tests/integration/test_optimizer_results.py`, `tests/property/test_join_order_equivalence.py` |
-| per-node instrumentation | `tests/contract/test_explain_analyze.py`, `tests/integration/test_instrumentation_cleanup.py` |
 | Phase A closure | `tests/acceptance/test_phase_a.py` |
 | Phase B closure | `tests/acceptance/test_phase_b.py` |
 | Phase C closure | `tests/acceptance/test_phase_c.py` |

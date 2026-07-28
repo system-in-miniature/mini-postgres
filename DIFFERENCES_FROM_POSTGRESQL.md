@@ -41,10 +41,14 @@ differs in product scope and implementation.
 
 ## Transactions and maintenance
 
-Phase B statements are serialized inside one process. Unique checks are
+Phase C statements are serialized inside one process. Unique checks are
 statement-local and do not model PostgreSQL's speculative insertion,
 deferrable constraints, composite table constraints, NULL uniqueness options,
 or concurrent index build.
+
+Statistics change only through explicit `ANALYZE`; there are no automatic
+analyze thresholds, extended statistics, bitmap/index-only paths, or
+PostgreSQL planner configuration surface.
 
 Transactions, MVCC, locks, WAL recovery, Vacuum, and HOT are accepted later
 phases. Their goal is to expose PostgreSQL-shaped invariants, not reproduce

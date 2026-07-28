@@ -46,6 +46,26 @@ and equi-depth histogram bounds. Selectivity is always clamped to `[0, 1]`;
 missing statistics use stable defaults. Costs are relative work units, not
 milliseconds. Stale statistics may produce a poor plan but cannot change rows.
 
+The missing-table defaults are 1,000 rows and 10 pages; they permit planning
+but not index selection. Unsupported predicate shapes use selectivity `1/3`.
+Equality first checks MCVs and then divides residual non-null mass by residual
+distinct count. Ranges combine matching MCV mass with histogram interpolation;
+`NOT`, `AND`, and `OR` use complement and independence formulas.
+
+The frozen relative constants are:
+
+```text
+sequential page = 1.0
+random page     = 4.0
+CPU tuple       = 0.01
+CPU operator    = 0.0025
+```
+
+Ties prefer SeqScan and NestedLoop. HashJoin extracts one cross-input equality
+key, builds the estimated smaller side, and evaluates the complete ON
+predicate as a residual. Join-memo ties then use stable relation IDs and node
+kind.
+
 ## Executor ownership
 
 Every executor follows:
