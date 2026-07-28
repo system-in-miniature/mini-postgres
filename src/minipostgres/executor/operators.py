@@ -118,6 +118,7 @@ class IndexScanExecutor(Executor):
         self._predicate = predicate
         self._context = context
         self._iterator = None
+        self._seen_visible: set[TID] = set()
 
     def _open(self) -> None:
         access = self._access()
@@ -150,12 +151,19 @@ class IndexScanExecutor(Executor):
                 assert self._context.snapshot is not None
                 assert self._context.transaction is not None
                 assert self._context.statuses is not None
-                values = access.fetch_mvcc(
+                resolved = access.resolve_mvcc(
                     tid,
                     self._context.snapshot,
                     self._context.transaction.xid,
                     self._context.statuses,
                 )
+                if resolved is None:
+                    continue
+                visible_tid, values = resolved
+                if visible_tid in self._seen_visible:
+                    continue
+                self._seen_visible.add(visible_tid)
+                tid = visible_tid
             else:
                 values = access.fetch(tid)
             if values is None:
@@ -175,6 +183,7 @@ class IndexScanExecutor(Executor):
         if callable(close):
             close()
         self._iterator = None
+        self._seen_visible.clear()
 
     def _access(self) -> IndexedTableAccess:
         access = self._context.table(self._table_id)

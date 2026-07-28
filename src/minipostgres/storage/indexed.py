@@ -105,6 +105,15 @@ class IndexedTableAccess:
     ) -> tuple[Scalar, ...] | None:
         return self._mvcc_heap().fetch_visible(tid, snapshot, xid, statuses)
 
+    def resolve_mvcc(
+        self,
+        tid: TID,
+        snapshot: Snapshot,
+        xid: int,
+        statuses: TransactionStatusTable,
+    ) -> tuple[TID, tuple[Scalar, ...]] | None:
+        return self._mvcc_heap().resolve_visible(tid, snapshot, xid, statuses)
+
     def scan_mvcc(
         self,
         snapshot: Snapshot,
@@ -147,9 +156,10 @@ class IndexedTableAccess:
         values: tuple[Scalar, ...],
     ) -> TID | None:
         heap = self._mvcc_heap()
-        old_values = heap.fetch_visible(tid, snapshot, xid, statuses)
-        if old_values is None:
+        visible = heap.resolve_visible(tid, snapshot, xid, statuses)
+        if visible is None:
             return None
+        visible_tid, _old_values = visible
         validated = self.schema.validate_row(values)
         new_keys = self._keys(validated)
         self._check_unique_visible(
@@ -158,9 +168,9 @@ class IndexedTableAccess:
             snapshot,
             xid,
             statuses,
-            ignored_tid=tid,
+            ignored_tid=visible_tid,
         )
-        replacement = heap.replace_version(tid, xid, validated)
+        replacement = heap.replace_version(visible_tid, xid, validated)
         if replacement is None:
             return None
         for binding, key in new_keys:
@@ -221,12 +231,17 @@ class IndexedTableAccess:
             if not binding.metadata.unique:
                 continue
             for candidate in binding.tree.search(key):
-                if candidate == ignored_tid:
+                resolved = heap.resolve_visible(
+                    candidate,
+                    snapshot,
+                    xid,
+                    statuses,
+                )
+                if resolved is None or resolved[0] == ignored_tid:
                     continue
-                if heap.fetch_visible(candidate, snapshot, xid, statuses) is not None:
-                    raise ConstraintViolation(
-                        f"unique index {binding.metadata.name} rejects duplicate key"
-                    )
+                raise ConstraintViolation(
+                    f"unique index {binding.metadata.name} rejects duplicate key"
+                )
 
     def _mvcc_heap(self) -> HeapTable:
         if not isinstance(self._heap, HeapTable):

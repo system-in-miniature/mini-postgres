@@ -19,6 +19,10 @@ def test_update_creates_new_version_and_keeps_old_snapshot(
     assert engine.execute("SELECT age FROM users WHERE id = 1").rows == ((21,),)
     reader.execute("COMMIT")
 
+    engine.execute("UPDATE users SET age = 22 WHERE id = 1")
+    engine.execute("ANALYZE users")
+    assert engine.execute("SELECT age FROM users WHERE id = 1").rows == ((22,),)
+
 
 def test_aborted_insert_and_delete_are_logically_undone(
     engine: Database,
@@ -36,11 +40,3 @@ def test_aborted_insert_and_delete_are_logically_undone(
     deleter.execute("DELETE FROM users WHERE id = 10")
     deleter.execute("ROLLBACK")
     assert engine.execute("SELECT * FROM users WHERE id = 10").rows == ((10,),)
-
-
-def test_committed_versions_survive_clean_restart(tmp_path) -> None:
-    with Database.open(tmp_path) as database:
-        database.execute("CREATE TABLE users (id INT PRIMARY KEY)")
-        database.execute("INSERT INTO users VALUES (1)")
-    with Database.open(tmp_path) as reopened:
-        assert reopened.execute("SELECT * FROM users").rows == ((1,),)

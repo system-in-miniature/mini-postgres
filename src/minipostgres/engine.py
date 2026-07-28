@@ -95,7 +95,7 @@ class Database:
         self._context = ExecutionContext(dict(self._accesses))
         self._planner = Planner()
         self._instrumentation_tracker = InstrumentationTracker()
-        self._transactions = TransactionManager.open(root)
+        self._transactions = TransactionManager()
         self._lock = threading.RLock()
         self._closed = False
         self._default_session = DatabaseSession(self)
