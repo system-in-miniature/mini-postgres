@@ -57,18 +57,16 @@ def test_order_by_output_alias_reuses_bound_select_expression(
     assert bound.order_by[0].expression == bound.items[0].expression
 
 
-def test_table_aliases_make_self_join_scopes_distinct(catalog: Catalog) -> None:
-    bound = Binder(catalog).bind(
-        parse(
-            "SELECT parent.id FROM users parent JOIN users child "
-            "ON parent.id = child.id"
+def test_self_join_aliases_are_rejected_without_relation_instance_ids(
+    catalog: Catalog,
+) -> None:
+    with pytest.raises(BindError, match="self-joins are not supported"):
+        Binder(catalog).bind(
+            parse(
+                "SELECT parent.id FROM users parent JOIN users child "
+                "ON parent.id = child.id"
+            )
         )
-    )
-
-    assert isinstance(bound, BoundSelect)
-    expression = bound.items[0].expression
-    assert isinstance(expression, BoundColumn)
-    assert expression.binding == ColumnBinding(catalog.table("users").table_id, 0)
 
 
 def test_explicit_alias_hides_the_base_table_name(catalog: Catalog) -> None:
