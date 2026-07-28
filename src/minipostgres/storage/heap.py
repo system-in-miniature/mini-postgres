@@ -13,7 +13,7 @@ from minipostgres.storage.constants import PAGE_BODY_SIZE, PageKind
 from minipostgres.storage.free_space import FreeSpaceMap
 from minipostgres.storage.identifiers import heap_page_key, heap_relation
 from minipostgres.storage.page import decode_page, encode_page
-from minipostgres.storage.slotted import SLOT_ENTRY_SIZE, SlottedPage
+from minipostgres.storage.slotted import SlottedPage
 from minipostgres.storage.tuple import SYSTEM_XID, TupleCodec, TupleVersion
 from minipostgres.types import Scalar
 
@@ -61,7 +61,10 @@ class HeapTable:
         encoded_tuple = self._codec.encode(
             TupleVersion(SYSTEM_XID, 0, None, validated)
         )
-        required = len(encoded_tuple) + SLOT_ENTRY_SIZE
+        # A dead slot can be reused without growing the directory. The FSM is
+        # approximate, so use the tuple payload as the lower-bound candidate
+        # size and let SlottedPage perform the exact fit check.
+        required = len(encoded_tuple)
         with self._lock:
             for page_id in self.free_space.candidate_pages(required):
                 tid = self._try_insert(page_id, encoded_tuple)
@@ -133,7 +136,7 @@ class HeapTable:
                 except KeyError:
                     return False
                 self._publish_page(guard, page)
-                self.free_space.record(tid.page_id, page.contiguous_free_bytes)
+                self.free_space.record(tid.page_id, page.available_free_bytes)
                 return True
 
     def _try_insert(self, page_id: int, encoded_tuple: bytes) -> TID | None:
@@ -145,10 +148,10 @@ class HeapTable:
             try:
                 slot_id = page.insert(encoded_tuple)
             except PageFull:
-                self.free_space.record(page_id, page.contiguous_free_bytes)
+                self.free_space.record(page_id, page.available_free_bytes)
                 return None
             self._publish_page(guard, page)
-            self.free_space.record(page_id, page.contiguous_free_bytes)
+            self.free_space.record(page_id, page.available_free_bytes)
             return TID(page_id, slot_id)
 
     def _insert_new_page(self, encoded_tuple: bytes) -> TID:
@@ -158,7 +161,7 @@ class HeapTable:
             self._publish_page(guard, page)
             self.free_space.record(
                 guard.key.page_id,
-                page.contiguous_free_bytes,
+                page.available_free_bytes,
             )
             return TID(guard.key.page_id, slot_id)
 
@@ -192,4 +195,4 @@ class HeapTable:
             key = heap_page_key(self.table_id, page_id)
             with self._pool.fetch_page(key) as guard:
                 page = self._slotted_page(guard)
-                self.free_space.record(page_id, page.contiguous_free_bytes)
+                self.free_space.record(page_id, page.available_free_bytes)

@@ -77,3 +77,16 @@ def test_heap_tids_keep_stable_slots_after_delete_and_compaction(
     assert heap.fetch(third) == (3, "C", 40)
     assert heap.fetch(inserted) == (4, "D" * 2_000, 50)
 
+
+def test_heap_reuses_space_reclaimable_by_compaction_after_delete(
+    tmp_path: Path,
+) -> None:
+    _disk, _pool, heap = _open_heap(tmp_path)
+    deleted = heap.insert((1, "x" * 7_000, 20))
+    assert deleted.page_id == 0
+    assert heap.delete(deleted)
+
+    replacement = heap.insert((2, "y" * 6_500, 30))
+
+    assert replacement.page_id == 0
+    assert heap.fetch(replacement) == (2, "y" * 6_500, 30)

@@ -104,6 +104,13 @@ class SlottedPage:
 
         return self._upper - self.lower
 
+    @property
+    def available_free_bytes(self) -> int:
+        """Bytes available after compaction, excluding the fixed directory."""
+
+        live_bytes = sum(slot.length for slot in self._slots if slot.live)
+        return SLOTTED_BODY_SIZE - self.lower - live_bytes
+
     def live_slots(self) -> tuple[int, ...]:
         """Return live slot IDs in stable numeric order."""
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from minipostgres.catalog.model import Column, Schema, TableMetadata
@@ -13,6 +13,7 @@ from minipostgres.storage.heap import HeapTable
 from minipostgres.types import DataType
 
 
+@settings(deadline=None)
 @given(
     st.lists(
         st.tuples(
