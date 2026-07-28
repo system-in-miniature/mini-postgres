@@ -128,7 +128,8 @@ TID, null bitmap, and schema-directed values.
 All normal page I/O passes through the fixed-frame buffer pool. A `PageGuard`
 owns one pin and releases it exactly once. Clock eviction can select only
 unpinned frames. Dirty flush calls the WAL gate before `DiskManager.write_page`;
-until Phase D, the default gate accepts only page LSN zero.
+heap mutations first append a full-page post-image and install its WAL position
+as the page LSN.
 
 ## Heap and index persistence
 
@@ -151,7 +152,7 @@ prepare stable catalog identity
 → publish catalog metadata
 ```
 
-## Current durability
+## Transactions and durability
 
 The catalog writes deterministic, versioned JSON through:
 
@@ -162,7 +163,28 @@ temporary file
 → parent-directory fsync
 ```
 
-Database close flushes every dirty frame, fsyncs published heap/index
-relations, and closes descriptors. Reopening reconstructs heap and index access
-from catalog IDs. There is no claim of crash-safe atomic DML until WAL and
-recovery arrive in Phase D.
+Each session owns at most one explicit transaction. Read Committed takes a new
+snapshot per statement; Repeatable Read retains its first data snapshot.
+Tuple versions carry creator/deleter XIDs. Tuple and unique-key locks serialize
+conflicting writers, while a wait-for graph selects deterministic deadlock
+victims.
+
+Commit appends and fsyncs its WAL record before publishing committed status or
+returning success. Sharp checkpoint ordering is:
+
+```text
+flush WAL
+→ flush dirty frames
+→ fsync relation files
+→ append/fsync CHECKPOINT
+→ atomic checksummed control-file replace
+```
+
+Recovery repairs a torn final WAL record, reconstructs transaction outcomes,
+marks incomplete transactions aborted, and REDOs missing, corrupt, or older
+heap pages. Indexes are derived state and are rebuilt after unclean recovery.
+
+Vacuum computes a horizon from active snapshots, deletes exact stale index
+entries before making a stable slot reusable, compacts page bytes, and logs the
+post-image. HOT keeps an indexed root TID when the indexed keys are unchanged
+and the replacement fits on its source page.

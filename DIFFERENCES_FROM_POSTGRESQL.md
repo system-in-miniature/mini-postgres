@@ -34,23 +34,27 @@ differs in product scope and implementation.
   shared-buffer replacement and background writer machinery;
 - B+Tree pages and ordered key encoding are custom and support a bounded scalar
   subset with no NULL keys or collation framework;
-- clean close/restart is supported, but crash recovery is not yet claimed;
-- WAL formats arriving later remain custom and versioned;
+- clean restart and injected-crash REDO use a custom full-page-image WAL;
+- WAL, checkpoint, control, and failpoint formats are custom and versioned;
 - no PostgreSQL page, relation-fork, WAL, checkpoint, or savepoint format
   compatibility is claimed.
 
 ## Transactions and maintenance
 
-Phase C statements are serialized inside one process. Unique checks are
-statement-local and do not model PostgreSQL's speculative insertion,
-deferrable constraints, composite table constraints, NULL uniqueness options,
-or concurrent index build.
+Transactions run inside one process with Read Committed or Repeatable Read.
+They do not model PostgreSQL's SSI, subtransactions, savepoints, speculative
+insertion, deferrable constraints, composite table constraints, NULL
+uniqueness options, or concurrent index build.
+
+Self-joins are rejected explicitly. Runtime column and TID identity is keyed by
+catalog table ID, so two aliases of the same relation are not silently treated
+as independent relation instances.
 
 Statistics change only through explicit `ANALYZE`; there are no automatic
 analyze thresholds, extended statistics, bitmap/index-only paths, or
 PostgreSQL planner configuration surface.
 
-Transactions, MVCC, locks, WAL recovery, Vacuum, and HOT are accepted later
-phases. Their goal is to expose PostgreSQL-shaped invariants, not reproduce
-every lock mode, isolation anomaly, WAL record, pruning optimization, or
-autovacuum policy.
+Recovery is REDO-only: aborted versions remain physically present and
+invisible until Vacuum. Vacuum is explicit, not automatic. HOT is limited to
+same-page updates with unchanged index keys rather than PostgreSQL's complete
+pruning, visibility-map, freeze, and wraparound machinery.

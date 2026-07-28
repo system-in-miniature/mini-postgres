@@ -18,7 +18,7 @@ SQL
 → TableAccess
 → Heap / B+Tree
 → Buffer Pool
-→ Fixed Relation Pages
+→ Fixed Relation Pages / WAL
 ```
 
 The query executor remains storage-independent. `MemoryTable` is retained as a
@@ -74,13 +74,19 @@ Implemented:
 - cost-based sequential/index scans and nested-loop/hash joins;
 - connected dynamic-programming join ordering for two through four relations;
 - per-node estimated/actual evidence from structured `EXPLAIN ANALYZE`.
+- independent sessions with Read Committed and Repeatable Read snapshots;
+- `xmin`/`xmax` tuple versions, writer/unique-key locks, and deterministic
+  deadlock victim recovery;
+- checksummed full-page-image WAL, page LSN enforcement, durable commit,
+  sharp checkpoints, tail repair, and REDO after injected crashes;
+- `VACUUM` with snapshot-safe reclamation, stable-slot reuse, index cleanup,
+  and same-page HOT updates when indexed keys are unchanged.
 
-Phase C guarantees persistence across a clean close and restart and uses
-statistics only to choose among semantically equivalent plans. Statistics
+MiniPostgres guarantees that a successful commit has a durable commit record,
+dirty heap pages cannot pass their WAL record, and restart replays newer
+full-page images while treating incomplete transactions as aborted. Statistics
 remain stale after DML until explicit `ANALYZE`; a bad estimate may select a
-slower plan but cannot change query rows. Crash recovery is deliberately not
-claimed yet: MVCC, WAL, checkpoints, recovery, Vacuum, and HOT belong to the
-accepted later phases.
+slower plan but cannot change query rows.
 
 ## Verification
 
@@ -94,7 +100,14 @@ git diff --check
 
 See [SCOPE.md](SCOPE.md), [ARCHITECTURE.md](ARCHITECTURE.md),
 [BEHAVIORAL_CONTRACT.md](BEHAVIORAL_CONTRACT.md), and
-[DIFFERENCES_FROM_POSTGRESQL.md](DIFFERENCES_FROM_POSTGRESQL.md).
+[DIFFERENCES_FROM_POSTGRESQL.md](DIFFERENCES_FROM_POSTGRESQL.md). Executable
+experiments are indexed in [LABS.md](LABS.md).
+
+Run the deterministic end-to-end feature tour with:
+
+```bash
+uv run python examples/demo.py
+```
 
 This repository is the finished-reference-project workspace.
 The course is designed after the reference project; no chapters, days, quizzes,

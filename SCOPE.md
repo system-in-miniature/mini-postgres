@@ -88,11 +88,17 @@ Costs are relative comparisons, not milliseconds. DML deliberately leaves
 statistics stale until the next explicit `ANALYZE`. Five or more joined
 relations retain source order.
 
-## Accepted later phases
+## Phase D
 
-- Phase D: transactions, snapshots, locks, MVCC, WAL, checkpoint, recovery.
-- Phase E: Vacuum, stable-slot reuse, compaction, HOT, differential and final
-  acceptance.
+Phase D adds transactions, statement/transaction snapshots, tuple versions,
+writer locks, deadlock detection, checksummed WAL, sharp checkpoints, and
+REDO recovery.
+
+## Phase E
+
+Phase E adds explicit `VACUUM`, cleanup horizons, index cleanup before
+stable-slot reuse, page compaction without TID renumbering, same-page HOT
+updates for unchanged index keys, and final acceptance evidence.
 
 ## Non-goals
 
@@ -100,5 +106,7 @@ relations retain source order.
 - complete PostgreSQL grammar, casts, errors, collations, or system catalogs;
 - users, privileges, foreign keys, views, triggers, stored procedures;
 - parallel query, multiple server processes, replication, or logical decoding;
-- full ARIES, TOAST, SSI, XID wraparound, or production autovacuum;
+- full ARIES/UNDO, TOAST, SSI, XID wraparound/freeze, savepoints, or
+  production autovacuum;
+- PostgreSQL-complete HOT-chain pruning or compatible WAL/checkpoint formats;
 - course content inside the reference repository.

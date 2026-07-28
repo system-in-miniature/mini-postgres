@@ -95,6 +95,32 @@
 - leaf links remain ordered across split, borrow, merge, and clean restart;
 - range bounds are inclusive.
 
+## Transactions and recovery
+
+- Read Committed takes a new snapshot for every statement;
+- Repeatable Read reuses the transaction's first data snapshot;
+- current transactions see their own inserts and hide their own deletes;
+- aborted creators are never visible;
+- tuple and unique-key locks are FIFO and released on commit or abort;
+- a detected deadlock aborts one deterministic victim;
+- heap mutation WAL precedes a dirty page carrying the same LSN;
+- successful commit means its commit record was flushed;
+- an incomplete final WAL record is truncated, while earlier corruption fails
+  recovery;
+- REDO applies only when the stored page is missing, corrupt, or older;
+- transactions without durable commit are recovered as aborted;
+- unclean recovery rebuilds derived B+Tree state from committed heap truth.
+
+## Vacuum and HOT
+
+- a version is reclaimed only when no active supported snapshot can see it;
+- exact stale index entries are removed before a heap slot becomes reusable;
+- compaction does not renumber surviving slots;
+- Vacuum is idempotent and does not shrink relation files;
+- an update is HOT only when all index keys are unchanged and the replacement
+  fits on the source page;
+- HOT retains the indexed root and resolves visibility through its chain.
+
 ## Evidence
 
 | Contract | Direct evidence |
@@ -120,3 +146,6 @@
 | Phase A closure | `tests/acceptance/test_phase_a.py` |
 | Phase B closure | `tests/acceptance/test_phase_b.py` |
 | Phase C closure | `tests/acceptance/test_phase_c.py` |
+| transaction/MVCC closure | `tests/acceptance/test_phase_d.py`, `tests/concurrency/` |
+| WAL/checkpoint/crash recovery | `tests/reliability/`, `tests/crash/` |
+| Vacuum/HOT closure | `tests/integration/test_vacuum_reuse.py`, `tests/integration/test_hot_update.py`, `tests/acceptance/test_phase_e.py` |
