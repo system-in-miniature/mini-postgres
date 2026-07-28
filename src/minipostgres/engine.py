@@ -23,6 +23,7 @@ from minipostgres.executor.instrumentation import InstrumentationTracker
 from minipostgres.index.btree import BTree
 from minipostgres.index.key import KeyCodec
 from minipostgres.maintenance.analyze import analyze_table
+from minipostgres.maintenance.coordinator import MaintenanceCoordinator
 from minipostgres.maintenance.horizon import cleanup_horizon
 from minipostgres.maintenance.vacuum import VacuumResult
 from minipostgres.planner.logical import LogicalPlan
@@ -130,6 +131,7 @@ class Database:
         self._context = ExecutionContext(dict(self._accesses))
         self._planner = Planner()
         self._instrumentation_tracker = InstrumentationTracker()
+        self._maintenance = MaintenanceCoordinator()
         self._transactions = TransactionManager(
             next_xid=recovery.next_xid,
             statuses=recovery.statuses,
@@ -276,6 +278,9 @@ class Database:
         if isinstance(bound, BoundExplain):
             return self._explain(bound, context)
         if isinstance(bound, (BoundSelect, BoundInsert, BoundUpdate, BoundDelete)):
+            if isinstance(bound, (BoundInsert, BoundUpdate, BoundDelete)):
+                with self._maintenance.writer(bound.table.table_id):
+                    return self._execute_relational(bound, context)
             return self._execute_relational(bound, context)
         raise BindError(
             f"{type(syntax).__name__} is reserved for a later project phase"
@@ -460,14 +465,16 @@ class Database:
             self._transactions.active_transactions(),
             next_xid=self._transactions.next_xid,
         )
-        results = [
-            self._accesses[table.table_id].vacuum(
-                context.transaction,
-                horizon=horizon,
-                statuses=context.statuses,
-            )
-            for table in tables
-        ]
+        results: list[VacuumResult] = []
+        for table in tables:
+            with self._maintenance.maintenance(table.table_id):
+                results.append(
+                    self._accesses[table.table_id].vacuum(
+                        context.transaction,
+                        horizon=horizon,
+                        statuses=context.statuses,
+                    )
+                )
         combined = VacuumResult(
             sum(result.pages_scanned for result in results),
             sum(result.dead_versions_removed for result in results),
