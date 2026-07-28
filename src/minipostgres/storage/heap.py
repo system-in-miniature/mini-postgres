@@ -15,6 +15,7 @@ from minipostgres.storage.identifiers import heap_page_key, heap_relation
 from minipostgres.storage.page import decode_page, encode_page
 from minipostgres.storage.slotted import SlottedPage
 from minipostgres.storage.tuple import SYSTEM_XID, TupleCodec, TupleVersion
+from minipostgres.testing.failpoints import hit
 from minipostgres.transaction.model import Transaction
 from minipostgres.transaction.snapshot import Snapshot
 from minipostgres.transaction.status import TransactionStatus, TransactionStatusTable
@@ -86,13 +87,25 @@ class HeapTable:
         self,
         transaction: Transaction,
         values: tuple[Scalar, ...],
+        *,
+        preferred_page_id: int | None = None,
     ) -> TID:
         validated = self.schema.validate_row(values)
         encoded = self._codec.encode(
             TupleVersion(transaction.xid, 0, None, validated)
         )
         with self._lock:
+            if preferred_page_id is not None:
+                preferred = self._try_insert(
+                    preferred_page_id,
+                    encoded,
+                    transaction=transaction,
+                )
+                if preferred is not None:
+                    return preferred
             for page_id in self.free_space.candidate_pages(len(encoded)):
+                if page_id == preferred_page_id:
+                    continue
                 if (
                     tid := self._try_insert(
                         page_id,
@@ -238,7 +251,11 @@ class HeapTable:
                 and statuses.get(old.xmax) is not TransactionStatus.ABORTED
             ):
                 return None
-            replacement = self.insert_version(transaction, values)
+            replacement = self.insert_version(
+                transaction,
+                values,
+                preferred_page_id=tid.page_id,
+            )
             self._set_version(
                 tid,
                 TupleVersion(
@@ -488,10 +505,12 @@ class HeapTable:
             body=page.to_body(),
         )
         if transaction is not None and self._wal is not None:
+            hit("before_wal_append")
             actual_lsn = self._wal.append(
                 transaction.xid,
                 HeapPageImagesRecord(((guard.key, encoded),)),
             )
+            hit("after_wal_append_before_flush")
             if actual_lsn != page_lsn:
                 raise RuntimeError("WAL append position changed during heap mutation")
         guard.replace_bytes(encoded)

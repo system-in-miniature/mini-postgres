@@ -186,8 +186,9 @@ class IndexedTableAccess:
         )
         if visible is None:
             return None
-        visible_tid, _old_values = visible
+        visible_tid, old_values = visible
         validated = self.schema.validate_row(values)
+        old_keys = self._keys(old_values)
         new_keys = self._keys(validated)
         self._acquire_unique_keys(transaction, locks, new_keys)
         self._check_unique_global(
@@ -205,8 +206,14 @@ class IndexedTableAccess:
         )
         if replacement is None:
             return None
-        for binding, key in new_keys:
-            binding.tree.insert(key, replacement)
+        hot = (
+            replacement.page_id == visible_tid.page_id
+            and tuple(key for _, key in old_keys)
+            == tuple(key for _, key in new_keys)
+        )
+        if not hot:
+            for binding, key in new_keys:
+                binding.tree.insert(key, replacement)
         return replacement
 
     def delete_mvcc(
@@ -258,6 +265,17 @@ class IndexedTableAccess:
         removed_indexes = 0
         reclaimed_bytes = 0
         for tid, version in versions:
+            # An indexed root must remain until chain pruning can retarget the
+            # entry atomically. A normal update has independently indexed its
+            # successor and is therefore safe to unlink.
+            if version.next_tid is not None and self._indexes:
+                successor = heap.physical_version(version.next_tid)
+                if successor is None or any(
+                    version.next_tid
+                    not in binding.tree.search(binding.key(successor.values))
+                    for binding in self._indexes
+                ):
+                    continue
             if (
                 classify_version(
                     version,

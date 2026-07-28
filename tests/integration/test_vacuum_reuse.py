@@ -34,7 +34,9 @@ def test_long_repeatable_snapshot_prevents_reclamation(tmp_path) -> None:
         reader = database.session(isolation=IsolationLevel.REPEATABLE_READ)
         reader.execute("BEGIN")
         assert reader.execute("SELECT age FROM users").rows == ((20,),)
-        database.execute("UPDATE users SET age = 21 WHERE id = 1")
+        # Changing an indexed column deliberately takes the non-HOT path so
+        # Vacuum can reclaim the old indexed version independently.
+        database.execute("UPDATE users SET id = 2, age = 21 WHERE id = 1")
 
         assert (
             database.execute("VACUUM users").maintenance.dead_versions_removed
