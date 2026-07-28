@@ -15,6 +15,7 @@ _BODY_HEADER = struct.Struct(">4sHHH2x")
 _SLOT = struct.Struct(">HHB3x")
 _DEAD = 0
 _LIVE = 1
+MAX_SLOT_PAYLOAD = SLOTTED_BODY_SIZE - _BODY_HEADER.size - _SLOT.size
 
 
 @dataclass(slots=True)
