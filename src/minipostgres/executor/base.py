@@ -8,6 +8,7 @@ from types import TracebackType
 
 from minipostgres.executor.memory import TableAccess
 from minipostgres.row import ExecutionRow
+from minipostgres.transaction.locks import LockManager
 from minipostgres.transaction.model import Transaction
 from minipostgres.transaction.snapshot import Snapshot
 from minipostgres.transaction.status import TransactionStatusTable
@@ -23,26 +24,35 @@ class OutputSlot:
 class ExecutionContext:
     """Runtime dependencies shared by one executor tree."""
 
-    def __init__(self, tables: dict[int, TableAccess]) -> None:
+    def __init__(
+        self,
+        tables: dict[int, TableAccess],
+        *,
+        transaction: Transaction | None = None,
+        snapshot: Snapshot | None = None,
+        statuses: TransactionStatusTable | None = None,
+        locks: LockManager | None = None,
+    ) -> None:
         self._tables = dict(tables)
-        self.transaction: Transaction | None = None
-        self.snapshot: Snapshot | None = None
-        self.statuses: TransactionStatusTable | None = None
+        self.transaction = transaction
+        self.snapshot = snapshot
+        self.statuses = statuses
+        self.locks = locks
 
-    def configure_transaction(
+    def for_transaction(
         self,
         transaction: Transaction,
         snapshot: Snapshot,
         statuses: TransactionStatusTable,
-    ) -> None:
-        self.transaction = transaction
-        self.snapshot = snapshot
-        self.statuses = statuses
-
-    def clear_transaction(self) -> None:
-        self.transaction = None
-        self.snapshot = None
-        self.statuses = None
+        locks: LockManager,
+    ) -> ExecutionContext:
+        return ExecutionContext(
+            self._tables,
+            transaction=transaction,
+            snapshot=snapshot,
+            statuses=statuses,
+            locks=locks,
+        )
 
     def table(self, table_id: int) -> TableAccess:
         try:

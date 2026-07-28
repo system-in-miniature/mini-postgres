@@ -145,72 +145,79 @@ class Database:
         session: DatabaseSession,
         sql: str,
     ) -> QueryResult:
-        with self._lock:
-            self._ensure_open()
-            try:
-                syntax = parse(sql)
-                bound = Binder(self._catalog).bind(syntax)
-            except BaseException:
-                transaction = session.transaction
-                if (
-                    transaction is not None
-                    and transaction.state is TransactionState.ACTIVE
-                ):
-                    transaction.mark_failed()
-                raise
-            if isinstance(bound, BoundBegin):
-                if session.transaction is not None:
-                    raise BindError("transaction is already active")
-                session.transaction = self._transactions.begin(session.isolation)
-                return QueryResult(command_tag="BEGIN")
-            if isinstance(bound, BoundCommit):
-                transaction = session.transaction
-                if transaction is None:
-                    raise BindError("COMMIT without BEGIN")
-                transaction.require_usable()
-                self._transactions.commit(transaction)
-                session.transaction = None
-                return QueryResult(command_tag="COMMIT")
-            if isinstance(bound, BoundRollback):
-                transaction = session.transaction
-                if transaction is None:
-                    raise BindError("ROLLBACK without BEGIN")
-                self._transactions.abort(transaction)
-                session.transaction = None
-                return QueryResult(command_tag="ROLLBACK")
+        self._ensure_open()
+        try:
+            syntax = parse(sql)
+            bound = Binder(self._catalog).bind(syntax)
+        except BaseException:
             transaction = session.transaction
-            implicit = transaction is None
-            if transaction is None:
-                transaction = self._transactions.begin(session.isolation)
-            else:
-                transaction.require_usable()
-            snapshot = self._transactions.statement_snapshot(transaction)
-            if session.transaction is not None and isinstance(
-                bound,
-                (BoundCreateTable, BoundCreateIndex, BoundAnalyze),
+            if (
+                transaction is not None
+                and transaction.state is TransactionState.ACTIVE
             ):
                 transaction.mark_failed()
-                raise BindError("DDL and ANALYZE are not allowed inside a transaction")
-            self._context.configure_transaction(
-                transaction,
-                snapshot,
-                self._transactions.statuses,
-            )
-            try:
-                result = self._dispatch(bound, syntax)
-            except BaseException:
-                if implicit:
-                    self._transactions.abort(transaction)
-                elif transaction.state is TransactionState.ACTIVE:
-                    transaction.mark_failed()
-                raise
-            finally:
-                self._context.clear_transaction()
+            raise
+        if isinstance(bound, BoundBegin):
+            if session.transaction is not None:
+                raise BindError("transaction is already active")
+            session.transaction = self._transactions.begin(session.isolation)
+            return QueryResult(command_tag="BEGIN")
+        if isinstance(bound, BoundCommit):
+            transaction = session.transaction
+            if transaction is None:
+                raise BindError("COMMIT without BEGIN")
+            transaction.require_usable()
+            self._transactions.commit(transaction)
+            session.transaction = None
+            return QueryResult(command_tag="COMMIT")
+        if isinstance(bound, BoundRollback):
+            transaction = session.transaction
+            if transaction is None:
+                raise BindError("ROLLBACK without BEGIN")
+            self._transactions.abort(transaction)
+            session.transaction = None
+            return QueryResult(command_tag="ROLLBACK")
+        transaction = session.transaction
+        implicit = transaction is None
+        if transaction is None:
+            transaction = self._transactions.begin(session.isolation)
+        else:
+            transaction.require_usable()
+        snapshot = self._transactions.statement_snapshot(transaction)
+        if session.transaction is not None and isinstance(
+            bound,
+            (BoundCreateTable, BoundCreateIndex, BoundAnalyze),
+        ):
+            transaction.mark_failed()
+            raise BindError("DDL and ANALYZE are not allowed inside a transaction")
+        context = self._context.for_transaction(
+            transaction,
+            snapshot,
+            self._transactions.statuses,
+            self._transactions.locks,
+        )
+        try:
+            if isinstance(bound, (BoundCreateTable, BoundCreateIndex, BoundAnalyze)):
+                with self._lock:
+                    result = self._dispatch(bound, syntax, context)
+            else:
+                result = self._dispatch(bound, syntax, context)
+        except BaseException:
             if implicit:
-                self._transactions.commit(transaction)
-            return result
+                self._transactions.abort(transaction)
+            elif transaction.state is TransactionState.ACTIVE:
+                transaction.mark_failed()
+            raise
+        if implicit:
+            self._transactions.commit(transaction)
+        return result
 
-    def _dispatch(self, bound: BoundStatement, syntax: object) -> QueryResult:
+    def _dispatch(
+        self,
+        bound: BoundStatement,
+        syntax: object,
+        context: ExecutionContext,
+    ) -> QueryResult:
         if isinstance(bound, BoundCreateTable):
             return self._create_table(bound)
         if isinstance(bound, BoundCreateIndex):
@@ -218,14 +225,18 @@ class Database:
         if isinstance(bound, BoundAnalyze):
             return self._analyze(bound)
         if isinstance(bound, BoundExplain):
-            return self._explain(bound)
+            return self._explain(bound, context)
         if isinstance(bound, (BoundSelect, BoundInsert, BoundUpdate, BoundDelete)):
-            return self._execute_relational(bound)
+            return self._execute_relational(bound, context)
         raise BindError(
             f"{type(syntax).__name__} is reserved for a later project phase"
         )
 
-    def _explain(self, statement: BoundExplain) -> QueryResult:
+    def _explain(
+        self,
+        statement: BoundExplain,
+        context: ExecutionContext,
+    ) -> QueryResult:
         logical = self._planner.logical(statement.statement)
         physical = self._optimize(logical)
         if not statement.analyze:
@@ -234,7 +245,7 @@ class Database:
                 plan=explain_plan(physical),
             )
         session = self._instrumentation_tracker.session()
-        rows = collect(build_executor(physical, self._context, session))
+        rows = collect(build_executor(physical, context, session))
         public_rows: tuple[tuple[Scalar, ...], ...] = ()
         columns: tuple[str, ...] = ()
         if isinstance(statement.statement, BoundSelect):
@@ -399,10 +410,11 @@ class Database:
     def _execute_relational(
         self,
         statement: BoundStatement,
+        context: ExecutionContext,
     ) -> QueryResult:
         logical = self._planner.logical(statement)
         physical = self._optimize(logical)
-        rows = collect(build_executor(physical, self._context))
+        rows = collect(build_executor(physical, context))
         if isinstance(statement, BoundSelect):
             materialized = self._materialize_select(statement, rows)
             return QueryResult(

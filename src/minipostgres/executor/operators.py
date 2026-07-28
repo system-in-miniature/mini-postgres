@@ -23,6 +23,7 @@ from minipostgres.sql.bound import (
     BoundSelectItem,
 )
 from minipostgres.storage.indexed import IndexedTableAccess
+from minipostgres.transaction.locks import LockManager
 from minipostgres.types import Scalar
 
 
@@ -493,9 +494,9 @@ class InsertExecutor(ModificationExecutor):
                     assert self._context.statuses is not None
                     inserted.append(
                         access.insert_mvcc(
-                            self._context.transaction.xid,
-                            self._context.snapshot,
+                            self._context.transaction,
                             self._context.statuses,
+                            _locks(self._context),
                             candidate,
                         )
                     )
@@ -585,9 +586,10 @@ class UpdateExecutor(ModificationExecutor):
                     assert self._context.statuses is not None
                     replacement = access.replace_mvcc(
                         tid,
-                        self._context.transaction.xid,
+                        self._context.transaction,
                         self._context.snapshot,
                         self._context.statuses,
+                        _locks(self._context),
                         values,
                     )
                 else:
@@ -633,8 +635,14 @@ class DeleteExecutor(ModificationExecutor):
         access = self._context.table(self._table.table_id)
         if _has_mvcc(self._context) and isinstance(access, IndexedTableAccess):
             assert self._context.transaction is not None
+            assert self._context.statuses is not None
             self._affected = sum(
-                access.delete_mvcc(tid, self._context.transaction.xid)
+                access.delete_mvcc(
+                    tid,
+                    self._context.transaction,
+                    self._context.statuses,
+                    _locks(self._context),
+                )
                 for tid in tids
             )
         else:
@@ -646,7 +654,13 @@ def _has_mvcc(context: ExecutionContext) -> bool:
         context.transaction is not None
         and context.snapshot is not None
         and context.statuses is not None
+        and context.locks is not None
     )
+
+
+def _locks(context: ExecutionContext) -> LockManager:
+    assert context.locks is not None
+    return context.locks
 
 
 def _drain_opened(executor: Executor) -> list[ExecutionRow]:

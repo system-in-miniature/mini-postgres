@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 
+from minipostgres.transaction.locks import LockManager
 from minipostgres.transaction.model import (
     IsolationLevel,
     Transaction,
@@ -16,6 +17,7 @@ class TransactionManager:
         self._next_xid = next_xid
         self._active: dict[int, Transaction] = {}
         self.statuses = TransactionStatusTable()
+        self.locks = LockManager()
         self._lock = threading.RLock()
 
     @property
@@ -56,6 +58,7 @@ class TransactionManager:
             transaction.mark_committed()
             self.statuses.set(transaction.xid, TransactionStatus.COMMITTED)
             self._active.pop(transaction.xid, None)
+            self.locks.release_all(transaction)
 
     def abort(self, transaction: Transaction) -> None:
         with self._lock:
@@ -63,6 +66,7 @@ class TransactionManager:
                 transaction.mark_aborted()
             self.statuses.set(transaction.xid, TransactionStatus.ABORTED)
             self._active.pop(transaction.xid, None)
+            self.locks.release_all(transaction)
 
     def active_transactions(self) -> tuple[Transaction, ...]:
         with self._lock:

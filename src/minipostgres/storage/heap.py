@@ -16,7 +16,7 @@ from minipostgres.storage.page import decode_page, encode_page
 from minipostgres.storage.slotted import SlottedPage
 from minipostgres.storage.tuple import SYSTEM_XID, TupleCodec, TupleVersion
 from minipostgres.transaction.snapshot import Snapshot
-from minipostgres.transaction.status import TransactionStatusTable
+from minipostgres.transaction.status import TransactionStatus, TransactionStatusTable
 from minipostgres.transaction.visibility import is_visible
 from minipostgres.types import Scalar
 
@@ -122,6 +122,40 @@ class HeapTable:
             visible_tid, visible_version = visible
             return visible_tid, visible_version.values
 
+    def resolve_globally_live(
+        self,
+        tid: TID,
+        current_xid: int,
+        statuses: TransactionStatusTable,
+    ) -> tuple[TID, tuple[Scalar, ...]] | None:
+        """Resolve the newest committed-or-own version after a writer wait."""
+
+        with self._lock:
+            current: TID | None = self.root_tid(tid)
+            live: tuple[TID, TupleVersion] | None = None
+            visited: set[TID] = set()
+            while current is not None:
+                if current in visited:
+                    raise CorruptPage("tuple version chain contains a cycle")
+                visited.add(current)
+                version = self.physical_version(current)
+                if version is None:
+                    break
+                creator_committed = version.xmin in {SYSTEM_XID, current_xid} or (
+                    statuses.get(version.xmin) is TransactionStatus.COMMITTED
+                )
+                deleter_committed = version.xmax == current_xid or (
+                    version.xmax != 0
+                    and statuses.get(version.xmax) is TransactionStatus.COMMITTED
+                )
+                if creator_committed and not deleter_committed:
+                    live = (current, version)
+                current = version.next_tid
+            if live is None:
+                return None
+            live_tid, live_version = live
+            return live_tid, live_version.values
+
     def scan_visible(
         self,
         snapshot: Snapshot,
@@ -201,6 +235,24 @@ class HeapTable:
                     for slot_id in page.live_slots()
                 )
         return iter(rows)
+
+    def root_tid(self, tid: TID) -> TID:
+        """Return the oldest physical member of the chain containing ``tid``."""
+
+        with self._lock:
+            predecessors = {
+                version.next_tid: candidate
+                for candidate, version in self.scan_versions()
+                if version.next_tid is not None
+            }
+            current = tid
+            visited: set[TID] = set()
+            while current in predecessors:
+                if current in visited:
+                    raise CorruptPage("tuple version chain contains a cycle")
+                visited.add(current)
+                current = predecessors[current]
+            return current
 
     def _set_version(self, tid: TID, version: TupleVersion) -> None:
         key = heap_page_key(self.table_id, tid.page_id)

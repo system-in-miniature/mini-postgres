@@ -12,8 +12,14 @@ from minipostgres.index.btree import BTree
 from minipostgres.index.key import KeyCodec
 from minipostgres.row import TID
 from minipostgres.storage.heap import HeapTable
+from minipostgres.transaction.locks import (
+    LockManager,
+    TupleLockKey,
+    UniqueKeyLockKey,
+)
+from minipostgres.transaction.model import Transaction
 from minipostgres.transaction.snapshot import Snapshot
-from minipostgres.transaction.status import TransactionStatusTable
+from minipostgres.transaction.status import TransactionStatus, TransactionStatusTable
 from minipostgres.types import Scalar
 
 
@@ -76,16 +82,18 @@ class IndexedTableAccess:
 
     def insert_mvcc(
         self,
-        xid: int,
-        snapshot: Snapshot,
+        transaction: Transaction,
         statuses: TransactionStatusTable,
+        locks: LockManager,
         values: tuple[Scalar, ...],
     ) -> TID:
         heap = self._mvcc_heap()
         validated = self.schema.validate_row(values)
         keys = self._keys(validated)
-        self._check_unique_visible(keys, heap, snapshot, xid, statuses)
-        tid = heap.insert_version(xid, validated)
+        self._acquire_unique_keys(transaction, locks, keys)
+        self._check_unique_global(keys, heap, transaction.xid, statuses)
+        tid = heap.insert_version(transaction.xid, validated)
+        transaction.has_writes = True
         for binding, key in keys:
             binding.tree.insert(key, tid)
         return tid
@@ -150,35 +158,65 @@ class IndexedTableAccess:
     def replace_mvcc(
         self,
         tid: TID,
-        xid: int,
+        transaction: Transaction,
         snapshot: Snapshot,
         statuses: TransactionStatusTable,
+        locks: LockManager,
         values: tuple[Scalar, ...],
     ) -> TID | None:
         heap = self._mvcc_heap()
-        visible = heap.resolve_visible(tid, snapshot, xid, statuses)
+        root_tid = heap.root_tid(tid)
+        locks.acquire(transaction, TupleLockKey(self.table_id, root_tid))
+        visible = heap.resolve_globally_live(
+            root_tid,
+            transaction.xid,
+            statuses,
+        )
         if visible is None:
             return None
         visible_tid, _old_values = visible
         validated = self.schema.validate_row(values)
         new_keys = self._keys(validated)
-        self._check_unique_visible(
+        self._acquire_unique_keys(transaction, locks, new_keys)
+        self._check_unique_global(
             new_keys,
             heap,
-            snapshot,
-            xid,
+            transaction.xid,
             statuses,
             ignored_tid=visible_tid,
         )
-        replacement = heap.replace_version(visible_tid, xid, validated)
+        replacement = heap.replace_version(
+            visible_tid,
+            transaction.xid,
+            validated,
+        )
         if replacement is None:
             return None
+        transaction.has_writes = True
         for binding, key in new_keys:
             binding.tree.insert(key, replacement)
         return replacement
 
-    def delete_mvcc(self, tid: TID, xid: int) -> bool:
-        return self._mvcc_heap().delete_version(tid, xid)
+    def delete_mvcc(
+        self,
+        tid: TID,
+        transaction: Transaction,
+        statuses: TransactionStatusTable,
+        locks: LockManager,
+    ) -> bool:
+        heap = self._mvcc_heap()
+        locks.acquire(
+            transaction,
+            TupleLockKey(self.table_id, heap.root_tid(tid)),
+        )
+        visible = heap.resolve_globally_live(tid, transaction.xid, statuses)
+        deleted = (
+            False
+            if visible is None
+            else heap.delete_version(visible[0], transaction.xid)
+        )
+        transaction.has_writes |= deleted
+        return deleted
 
     def delete(self, tid: TID) -> bool:
         values = self._heap.fetch(tid)
@@ -218,10 +256,9 @@ class IndexedTableAccess:
                 )
 
     @staticmethod
-    def _check_unique_visible(
+    def _check_unique_global(
         keys: tuple[tuple[IndexBinding, bytes], ...],
         heap: HeapTable,
-        snapshot: Snapshot,
         xid: int,
         statuses: TransactionStatusTable,
         *,
@@ -231,17 +268,45 @@ class IndexedTableAccess:
             if not binding.metadata.unique:
                 continue
             for candidate in binding.tree.search(key):
-                resolved = heap.resolve_visible(
-                    candidate,
-                    snapshot,
-                    xid,
-                    statuses,
+                if candidate == ignored_tid:
+                    continue
+                version = heap.physical_version(candidate)
+                if version is None:
+                    continue
+                creator = (
+                    TransactionStatus.IN_PROGRESS
+                    if version.xmin == xid
+                    else statuses.get(version.xmin)
                 )
-                if resolved is None or resolved[0] == ignored_tid:
+                if creator is TransactionStatus.ABORTED:
+                    continue
+                if version.xmax == xid:
+                    continue
+                if (
+                    version.xmax != 0
+                    and statuses.get(version.xmax) is TransactionStatus.COMMITTED
+                ):
                     continue
                 raise ConstraintViolation(
                     f"unique index {binding.metadata.name} rejects duplicate key"
                 )
+
+    @staticmethod
+    def _acquire_unique_keys(
+        transaction: Transaction,
+        locks: LockManager,
+        keys: tuple[tuple[IndexBinding, bytes], ...],
+    ) -> None:
+        resources = sorted(
+            (
+                UniqueKeyLockKey(binding.metadata.index_id, key)
+                for binding, key in keys
+                if binding.metadata.unique
+            ),
+            key=lambda resource: (resource.index_id, resource.encoded_key),
+        )
+        for resource in resources:
+            locks.acquire(transaction, resource)
 
     def _mvcc_heap(self) -> HeapTable:
         if not isinstance(self._heap, HeapTable):
