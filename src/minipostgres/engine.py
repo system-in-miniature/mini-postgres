@@ -11,7 +11,7 @@ from time import perf_counter
 from types import TracebackType
 
 from minipostgres.catalog.catalog import Catalog
-from minipostgres.catalog.model import Column, IndexMetadata
+from minipostgres.catalog.model import Column, IndexMetadata, TableMetadata
 from minipostgres.errors import BindError, ConstraintViolation, DatabaseClosed
 from minipostgres.executor.base import ExecutionContext, OutputSlot, collect
 from minipostgres.executor.factory import build_executor
@@ -156,7 +156,38 @@ class Database:
         access = IndexedTableAccess(HeapTable.open(self._buffer_pool, metadata))
         self._accesses[metadata.table_id] = access
         self._context.register_table(access)
+        for column in metadata.schema.columns:
+            if column.unique:
+                self._create_constraint_index(metadata, column, access)
         return QueryResult(command_tag="CREATE TABLE")
+
+    def _create_constraint_index(
+        self,
+        table: TableMetadata,
+        column: Column,
+        access: IndexedTableAccess,
+    ) -> None:
+        """Back accepted PRIMARY KEY/UNIQUE syntax with a durable B+Tree."""
+
+        suffix = "pkey" if column.primary_key else "key"
+        name = f"{table.name}_{column.name}_{suffix}"
+        metadata = self._catalog.prepare_index(
+            name,
+            table.table_id,
+            (column.column_id,),
+            unique=True,
+        )
+        tree = BTree.open(self._buffer_pool, metadata.index_id)
+        self._buffer_pool.flush_all()
+        self._disk.sync_relation(tree.relation)
+        self._catalog.publish_index(metadata)
+        access.add_index(
+            IndexBinding(
+                metadata,
+                tree,
+                KeyCodec((column.data_type,)),
+            )
+        )
 
     def _create_index(self, statement: BoundCreateIndex) -> QueryResult:
         metadata = self._catalog.prepare_index(
