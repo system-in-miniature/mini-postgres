@@ -27,6 +27,8 @@ class LogicalValues(LogicalPlan):
 @dataclass(frozen=True, slots=True)
 class LogicalScan(LogicalPlan):
     table: BoundTable
+    required_column_ids: frozenset[int] | None = None
+    required_column_ids: frozenset[int] | None = None
 
 
 @dataclass(frozen=True, slots=True)

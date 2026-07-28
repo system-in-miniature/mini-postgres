@@ -375,6 +375,8 @@ class Binder:
             allow_aggregate=allow_aggregate,
             context=context,
         )
+        if isinstance(bound, BoundLiteral) and bound.value is None:
+            return BoundLiteral(None, DataType.BOOLEAN, nullable=True)
         if bound.data_type is not DataType.BOOLEAN:
             raise TypeMismatch(f"{context} expression must be BOOLEAN")
         return bound
