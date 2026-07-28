@@ -14,9 +14,15 @@ differs in product scope and implementation.
 
 - handwritten parser and binder;
 - immutable teaching-oriented plan nodes;
-- only sequential scans until the Phase C cost-based planner;
+- exact full-table `ANALYZE`, rather than PostgreSQL sampling and its full
+  statistics catalog;
+- a small fixed relative cost model with deterministic defaults;
+- sequential and single-column B+Tree scans only;
+- connected dynamic-programming join ordering only up to four relations;
 - deterministic in-memory joins, aggregates, and sorts;
-- structured plan objects rather than PostgreSQL EXPLAIN text compatibility.
+- structured plan objects rather than PostgreSQL EXPLAIN text compatibility;
+- per-node timings are evidence from Python execution, not PostgreSQL cost
+  units or production latency predictions.
 
 ## Storage
 

@@ -12,6 +12,7 @@ SQL
 → Lexer / Parser
 → Binder
 → Logical Plan
+→ Rule Rewriter / Cost Optimizer
 → Physical Plan
 → Volcano Executor
 → TableAccess
@@ -66,11 +67,20 @@ Implemented:
 - `CREATE [UNIQUE] INDEX`, index maintenance for DML, clean restart, and
   statement-local uniqueness rollback;
 - durable automatic unique indexes for accepted single-column `PRIMARY KEY`
-  and `UNIQUE` declarations.
+  and `UNIQUE` declarations;
+- exact, durable `ANALYZE` statistics with MCV and equi-depth histograms;
+- bounded predicate selectivity and an explicit relative cost model;
+- constant folding, filter pushdown, and scan-column pruning;
+- cost-based sequential/index scans and nested-loop/hash joins;
+- connected dynamic-programming join ordering for two through four relations;
+- per-node estimated/actual evidence from structured `EXPLAIN ANALYZE`.
 
-Phase B guarantees persistence across a clean close and restart. Crash recovery
-is deliberately not claimed yet: MVCC, WAL, checkpoints, recovery, Vacuum, and
-HOT belong to the accepted later phases.
+Phase C guarantees persistence across a clean close and restart and uses
+statistics only to choose among semantically equivalent plans. Statistics
+remain stale after DML until explicit `ANALYZE`; a bad estimate may select a
+slower plan but cannot change query rows. Crash recovery is deliberately not
+claimed yet: MVCC, WAL, checkpoints, recovery, Vacuum, and HOT belong to the
+accepted later phases.
 
 ## Verification
 

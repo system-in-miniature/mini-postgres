@@ -11,6 +11,10 @@ Lexer → Parser → syntax AST
                     ↓
               Logical Plan
                     ↓
+          Fixed-point Rule Rewriter
+                    ↓
+      Statistics + Selectivity + Cost Model
+                    ↓
               Physical Plan
                     ↓
               Volcano Executor
@@ -30,9 +34,17 @@ The parser owns syntax only. The Binder is the first layer allowed to resolve
 table aliases, column names, catalog IDs, types, output aliases, aggregate
 legality, and contextual `NULL` types.
 
-Logical and physical nodes are immutable. The `Planner` currently performs
-baseline lowering: scans are sequential, simple equality joins use hash join,
-and other joins use nested loops. Cost-based choices arrive in Phase C.
+Logical and physical nodes are immutable. Rules fold literal expressions,
+push single-side predicates below inner joins, and annotate the minimum scan
+columns. `CostBasedOptimizer` then compares sequential and B+Tree access,
+nested-loop and hash joins, and connected join orders for two through four
+relations. Larger joins deliberately retain source order.
+
+`ANALYZE` performs one exact educational-scale heap scan and atomically
+publishes row/page counts, null fraction, distinct count, deterministic MCVs,
+and equi-depth histogram bounds. Selectivity is always clamped to `[0, 1]`;
+missing statistics use stable defaults. Costs are relative work units, not
+milliseconds. Stale statistics may produce a poor plan but cannot change rows.
 
 ## Executor ownership
 
@@ -47,6 +59,12 @@ close()
 `collect()` guarantees closure after both success and failure. Rows carry
 catalog-stable `ColumnBinding` keys, source TIDs for modification operators,
 and computed values for projections and aggregates.
+
+`EXPLAIN ANALYZE` wraps every executor without changing its pull contract.
+Each wrapper counts emitted rows and monotonic elapsed time across
+`open/next/close`; failure still closes every opened delegate. Index scans
+iterate candidate TIDs, fetch current heap tuples, and recheck the complete
+predicate.
 
 Modification executors fully evaluate and validate all candidate rows before
 calling `TableAccess`. They never mutate Python table containers directly.

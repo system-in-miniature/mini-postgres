@@ -40,7 +40,23 @@
 - update/delete use source TIDs supplied by the child executor;
 - a runtime error does not leave an executor tree open;
 - `EXPLAIN` does not execute its child;
-- `EXPLAIN ANALYZE` executes it and reports root actual rows and elapsed time.
+- `EXPLAIN ANALYZE` executes it, returns the SELECT rows, and reports estimated
+  and actual rows plus elapsed time for every physical node.
+
+## Statistics and planning
+
+- `ANALYZE` publishes one complete immutable table-statistics snapshot;
+- MCV ordering and equi-depth histogram construction are deterministic;
+- every selectivity estimate is a probability and missing statistics do not
+  make planning fail;
+- cost values are relative units and are never wall-clock predictions;
+- a sequential scan wins deterministic cost ties;
+- an index scan treats index entries as candidates and rechecks the full
+  predicate against the fetched heap tuple;
+- hash joins retain duplicate multiplicity and residual ON predicates;
+- only connected inner joins of two through four relations are reordered;
+- plans with five or more relations preserve source order;
+- statistics and optimizer rewrites must not alter query results.
 
 ## Persistent storage
 
@@ -67,8 +83,8 @@
 - unique indexes reject a key already owned by another TID;
 - accepted single-column `PRIMARY KEY` and `UNIQUE` declarations create and
   publish durable unique indexes with the table;
-- index search results are candidates and must be heap-rechecked by query
-  execution once Phase C introduces index scans;
+- index search results are candidates and are heap-rechecked by query
+  execution;
 - leaf links remain ordered across split, borrow, merge, and clean restart;
 - range bounds are inclusive.
 
@@ -91,5 +107,10 @@
 | validated modifications | `tests/unit/executor/test_modify_operators.py` |
 | public SQL loop | `tests/integration/test_query_loop.py` |
 | structured EXPLAIN and cleanup | `tests/contract/test_explain.py`, `tests/integration/test_executor_cleanup.py` |
+| statistics and selectivity | `tests/contract/test_analyze.py`, `tests/unit/planner/test_selectivity.py`, `tests/property/test_selectivity_bounds.py` |
+| scan and join choices | `tests/unit/planner/test_scan_choice.py`, `tests/unit/planner/test_join_choice.py`, `tests/unit/planner/test_join_order.py` |
+| optimized-result semantics | `tests/integration/test_optimizer_results.py`, `tests/property/test_join_order_equivalence.py` |
+| per-node instrumentation | `tests/contract/test_explain_analyze.py`, `tests/integration/test_instrumentation_cleanup.py` |
 | Phase A closure | `tests/acceptance/test_phase_a.py` |
 | Phase B closure | `tests/acceptance/test_phase_b.py` |
+| Phase C closure | `tests/acceptance/test_phase_c.py` |
