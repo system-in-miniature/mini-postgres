@@ -37,7 +37,7 @@ def recover(
     begun: set[int] = set()
     maximum_xid = 1
     redone = 0
-    for entry in wal.scan(start_lsn):
+    for entry in wal.scan():
         maximum_xid = max(maximum_xid, entry.xid)
         record = entry.record
         if isinstance(record, BeginRecord):
@@ -46,7 +46,7 @@ def recover(
             statuses.set(entry.xid, TransactionStatus.COMMITTED)
         elif isinstance(record, AbortRecord):
             statuses.set(entry.xid, TransactionStatus.ABORTED)
-        elif isinstance(record, HeapPageImagesRecord):
+        elif isinstance(record, HeapPageImagesRecord) and entry.lsn >= start_lsn:
             for key, image in record.images:
                 decoded_image = decode_page(key, image)
                 while disk.page_count(key.relation) <= key.page_id:

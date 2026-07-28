@@ -55,3 +55,22 @@ def test_recovery_allocates_a_missing_page_from_a_full_image(tmp_path) -> None:
     assert decode_page(key, disk.read_page(key)).body == b"restored"
     wal.close()
     disk.close()
+
+
+def test_recovery_reconstructs_old_statuses_when_redo_starts_later(
+    tmp_path,
+) -> None:
+    disk = DiskManager.open(tmp_path)
+    wal = WalManager.open(tmp_path / "wal.log")
+    wal.append(11, BeginRecord())
+    wal.append(11, CommitRecord())
+    redo_start = wal.end_lsn
+    wal.append(12, BeginRecord())
+    wal.flush()
+
+    result = recover(wal, disk, start_lsn=redo_start)
+
+    assert result.statuses.get(11) is TransactionStatus.COMMITTED
+    assert result.statuses.get(12) is TransactionStatus.ABORTED
+    wal.close()
+    disk.close()
