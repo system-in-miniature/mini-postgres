@@ -14,6 +14,7 @@ from minipostgres.storage.constants import PageKind
 from minipostgres.storage.identifiers import PageKey, RelationId
 from minipostgres.storage.page import decode_page, encode_page
 from minipostgres.storage.replacer import ClockReplacer
+from minipostgres.testing.failpoints import hit
 
 
 class PageDisk(Protocol):
@@ -218,7 +219,10 @@ class BufferPool:
             return
         assert frame.key is not None
         self._wal_flush_gate(frame.page_lsn)
+        hit("after_wal_flush_before_page_write")
+        hit("during_page_write")
         self._disk.write_page(frame.key, frame.page_bytes)
+        hit("after_page_write_before_commit")
         frame.dirty = False
 
     def guard_page_bytes(self, frame_id: int, key: PageKey) -> bytes:

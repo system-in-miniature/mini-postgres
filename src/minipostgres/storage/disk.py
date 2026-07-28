@@ -100,6 +100,16 @@ class DiskManager:
             key.page_id * PAGE_SIZE,
         )
 
+    def repair_page(self, key: PageKey, encoded: bytes) -> None:
+        """Install a verified REDO image even over a torn relation tail."""
+
+        decode_page(key, encoded)
+        self._pwrite_exact(
+            self._descriptor(key.relation),
+            encoded,
+            key.page_id * PAGE_SIZE,
+        )
+
     def sync_relation(self, relation: RelationId) -> None:
         """Make prior writes to one relation durable."""
 

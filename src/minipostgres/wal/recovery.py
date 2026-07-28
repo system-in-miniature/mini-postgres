@@ -51,16 +51,16 @@ def recover(
         elif isinstance(record, HeapPageImagesRecord) and entry.lsn >= start_lsn:
             for key, image in record.images:
                 decoded_image = decode_page(key, image)
-                while disk.page_count(key.relation) <= key.page_id:
-                    disk.allocate_page(key.relation, decoded_image.kind)
                 needs_redo = False
                 try:
+                    while disk.page_count(key.relation) <= key.page_id:
+                        disk.allocate_page(key.relation, decoded_image.kind)
                     current = decode_page(key, disk.read_page(key))
                     needs_redo = current.page_lsn < decoded_image.page_lsn
                 except CorruptPage:
                     needs_redo = True
                 if needs_redo:
-                    disk.write_page(key, image)
+                    disk.repair_page(key, image)
                     redone += 1
     for xid in begun:
         if statuses.get(xid) is TransactionStatus.IN_PROGRESS:

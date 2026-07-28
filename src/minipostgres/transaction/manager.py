@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 
+from minipostgres.testing.failpoints import hit
 from minipostgres.transaction.locks import LockManager
 from minipostgres.transaction.model import (
     IsolationLevel,
@@ -68,7 +69,9 @@ class TransactionManager:
         with self._lock:
             if transaction.has_writes and self._wal is not None:
                 self._wal.append(transaction.xid, CommitRecord())
+                hit("after_commit_append_before_flush")
                 self._wal.flush(self._wal.end_lsn)
+                hit("after_commit_flush_before_response")
             transaction.mark_committed()
             self.statuses.set(transaction.xid, TransactionStatus.COMMITTED)
             self._active.pop(transaction.xid, None)
