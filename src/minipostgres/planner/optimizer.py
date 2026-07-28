@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from minipostgres.catalog.catalog import Catalog
 from minipostgres.catalog.statistics import StatisticsStore, TableStatistics
+from minipostgres.row import ColumnBinding
 from minipostgres.sql.bound import (
     BoundBinary,
     BoundCast,
@@ -15,7 +16,7 @@ from minipostgres.sql.bound import (
     BoundLiteral,
 )
 from minipostgres.storage.indexed import IndexBinding, IndexedTableAccess
-from minipostgres.types import Scalar
+from minipostgres.types import DataType, Scalar
 
 from .cost import Cost, CostModel
 from .logical import (
@@ -32,6 +33,7 @@ from .logical import (
     LogicalUpdate,
     LogicalValues,
 )
+from .memo import JoinMemo, MemoAlternative
 from .physical import (
     PhysicalAggregate,
     PhysicalFilter,
@@ -225,13 +227,37 @@ class CostBasedOptimizer:
         return best
 
     def _join(self, logical: LogicalJoin) -> _Alternative:
-        left = self._optimize(logical.left)
-        right = self._optimize(logical.right)
+        leaves, predicates = _flatten_joins(logical)
+        if 2 <= len(leaves) <= 4:
+            reordered = self._join_dp(leaves, predicates)
+            if reordered is not None:
+                return reordered
+        return self._join_source_order(logical)
+
+    def _join_source_order(self, logical: LogicalJoin) -> _Alternative:
+        left = (
+            self._join_source_order(logical.left)
+            if isinstance(logical.left, LogicalJoin)
+            else self._optimize(logical.left)
+        )
+        right = (
+            self._join_source_order(logical.right)
+            if isinstance(logical.right, LogicalJoin)
+            else self._optimize(logical.right)
+        )
+        return self._join_alternatives(left, right, logical.condition)
+
+    def _join_alternatives(
+        self,
+        left: _Alternative,
+        right: _Alternative,
+        condition: BoundExpr,
+    ) -> _Alternative:
         rows = max(
             1.0,
             left.rows
             * right.rows
-            * self._selectivity.estimate(logical.condition),
+            * self._selectivity.estimate(condition),
         )
         nested_cost = (
             left.cost
@@ -242,14 +268,14 @@ class CostBasedOptimizer:
             PhysicalNestedLoopJoin(
                 left.plan,
                 right.plan,
-                logical.condition,
+                condition,
                 estimated_rows=rows,
                 estimated_cost=nested_cost.total,
             ),
             rows,
             nested_cost,
         )
-        keys = _hash_join_keys(logical.condition)
+        keys = _hash_join_keys(condition)
         if keys is None:
             return nested
         hash_cost = (
@@ -269,7 +295,7 @@ class CostBasedOptimizer:
                 build_plan,
                 probe_key,
                 build_key,
-                logical.condition,
+                condition,
                 estimated_rows=rows,
                 estimated_cost=hash_cost.total,
             ),
@@ -277,6 +303,104 @@ class CostBasedOptimizer:
             hash_cost,
         )
         return hashed if hashed.cost < nested.cost else nested
+
+    def _join_dp(
+        self,
+        leaves: tuple[LogicalPlan, ...],
+        predicates: tuple[BoundExpr, ...],
+    ) -> _Alternative | None:
+        relation_ids = tuple(_single_relation_id(leaf) for leaf in leaves)
+        if any(relation_id is None for relation_id in relation_ids):
+            return None
+        ids = tuple(
+            relation_id
+            for relation_id in relation_ids
+            if relation_id is not None
+        )
+        if len(set(ids)) != len(ids):
+            return None
+        memo = JoinMemo()
+        for relation_id, leaf in zip(ids, leaves, strict=True):
+            alternative = self._optimize(leaf)
+            memo.consider(
+                MemoAlternative(
+                    frozenset({relation_id}),
+                    alternative.plan,
+                    alternative.rows,
+                    alternative.cost,
+                )
+            )
+
+        full_mask = (1 << len(ids)) - 1
+        for size in range(2, len(ids) + 1):
+            for mask in range(1, full_mask + 1):
+                if mask.bit_count() != size:
+                    continue
+                relation_set = frozenset(
+                    ids[index]
+                    for index in range(len(ids))
+                    if mask & (1 << index)
+                )
+                first_bit = mask & -mask
+                left_mask = (mask - 1) & mask
+                while left_mask:
+                    if left_mask & first_bit:
+                        right_mask = mask ^ left_mask
+                        if right_mask:
+                            self._consider_partition(
+                                memo,
+                                relation_set,
+                                _ids_for_mask(ids, left_mask),
+                                _ids_for_mask(ids, right_mask),
+                                predicates,
+                            )
+                    left_mask = (left_mask - 1) & mask
+        final = memo.get(frozenset(ids))
+        if final is None:
+            return None
+        return _Alternative(final.plan, final.rows, final.cost)
+
+    def _consider_partition(
+        self,
+        memo: JoinMemo,
+        relation_set: frozenset[int],
+        left_ids: frozenset[int],
+        right_ids: frozenset[int],
+        predicates: tuple[BoundExpr, ...],
+    ) -> None:
+        left = memo.get(left_ids)
+        right = memo.get(right_ids)
+        if left is None or right is None:
+            return
+        consumed = left.consumed_predicates | right.consumed_predicates
+        connecting = tuple(
+            index
+            for index, predicate in enumerate(predicates)
+            if index not in consumed
+            and (bindings := _binding_table_ids(predicate))
+            and bindings <= relation_set
+            and bindings & left_ids
+            and bindings & right_ids
+        )
+        if not connecting:
+            return
+        condition = _combine_predicates(
+            tuple(predicates[index] for index in connecting)
+        )
+        joined = self._join_alternatives(
+            _Alternative(left.plan, left.rows, left.cost),
+            _Alternative(right.plan, right.rows, right.cost),
+            condition,
+        )
+        memo.consider(
+            MemoAlternative(
+                relation_set,
+                joined.plan,
+                joined.rows,
+                joined.cost,
+                consumed | frozenset(connecting),
+            )
+        )
 
     def _modify(
         self,
@@ -405,3 +529,84 @@ def _hash_join_keys(
         ):
             return conjunct.left, conjunct.right
     return None
+
+
+def _flatten_joins(
+    plan: LogicalPlan,
+) -> tuple[tuple[LogicalPlan, ...], tuple[BoundExpr, ...]]:
+    if not isinstance(plan, LogicalJoin):
+        return (plan,), ()
+    left_leaves, left_predicates = _flatten_joins(plan.left)
+    right_leaves, right_predicates = _flatten_joins(plan.right)
+    return (
+        left_leaves + right_leaves,
+        left_predicates + right_predicates + (plan.condition,),
+    )
+
+
+def _single_relation_id(plan: LogicalPlan) -> int | None:
+    relation_ids = _logical_relation_ids(plan)
+    if len(relation_ids) != 1:
+        return None
+    return next(iter(relation_ids))
+
+
+def _logical_relation_ids(plan: LogicalPlan) -> frozenset[int]:
+    if isinstance(plan, LogicalScan):
+        return frozenset({plan.table.metadata.table_id})
+    if isinstance(plan, LogicalJoin):
+        return _logical_relation_ids(plan.left) | _logical_relation_ids(
+            plan.right
+        )
+    child = getattr(plan, "child", None)
+    if isinstance(child, LogicalPlan):
+        return _logical_relation_ids(child)
+    return frozenset()
+
+
+def _binding_table_ids(expression: BoundExpr) -> frozenset[int]:
+    return frozenset(
+        binding.table_id for binding in _expression_bindings(expression)
+    )
+
+
+def _expression_bindings(
+    expression: BoundExpr,
+) -> frozenset[ColumnBinding]:
+    if isinstance(expression, BoundColumn):
+        return frozenset({expression.binding})
+    if isinstance(expression, BoundCast):
+        return _expression_bindings(expression.operand)
+    if isinstance(expression, BoundBinary):
+        return _expression_bindings(expression.left) | _expression_bindings(
+            expression.right
+        )
+    operand = getattr(expression, "operand", None)
+    if operand is not None:
+        return _expression_bindings(operand)
+    arguments = getattr(expression, "arguments", ())
+    result = frozenset[ColumnBinding]()
+    for argument in arguments:
+        result |= _expression_bindings(argument)
+    return result
+
+
+def _ids_for_mask(ids: tuple[int, ...], mask: int) -> frozenset[int]:
+    return frozenset(
+        relation_id
+        for index, relation_id in enumerate(ids)
+        if mask & (1 << index)
+    )
+
+
+def _combine_predicates(predicates: tuple[BoundExpr, ...]) -> BoundExpr:
+    result = predicates[0]
+    for predicate in predicates[1:]:
+        result = BoundBinary(
+            result,
+            "AND",
+            predicate,
+            DataType.BOOLEAN,
+            result.nullable or predicate.nullable,
+        )
+    return result
