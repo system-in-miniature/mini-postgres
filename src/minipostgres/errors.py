@@ -47,6 +47,10 @@ class PageFull(MiniPostgresError):
     """A page cannot fit a requested tuple or index entry."""
 
 
+class BufferPoolFull(MiniPostgresError):
+    """Every buffer frame is pinned and no page can be admitted."""
+
+
 class CorruptPage(MiniPostgresError):
     """A page failed structural or checksum validation."""
 
