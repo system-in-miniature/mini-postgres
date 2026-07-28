@@ -50,12 +50,27 @@ NULL
 ```
 
 `NOT NULL`, `PRIMARY KEY`, and `UNIQUE` are parsed into metadata. Phase A
-enforces `NOT NULL`; concurrency-safe primary/unique enforcement starts with
-the indexed storage phases.
+enforces `NOT NULL`.
+
+## Phase B
+
+Phase B adds:
+
+```text
+CREATE [UNIQUE] INDEX
+checksummed fixed pages
+stable slotted heap storage
+buffer pool and Clock eviction
+persistent B+Tree indexes
+clean close and restart
+```
+
+The frozen index subset rejects NULL keys. Explicit unique B+Tree indexes are
+enforced under the single-process statement latch. Automatic indexes for
+`PRIMARY KEY`/inline `UNIQUE` metadata remain outside this phase.
 
 ## Accepted later phases
 
-- Phase B: slotted pages, tuple codecs, disk manager, buffer pool, heap, B+Tree.
 - Phase C: statistics, index scans, costing, rewrites, join selection/order.
 - Phase D: transactions, snapshots, locks, MVCC, WAL, checkpoint, recovery.
 - Phase E: Vacuum, stable-slot reuse, compaction, HOT, differential and final

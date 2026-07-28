@@ -15,11 +15,15 @@ SQL
 → Physical Plan
 → Volcano Executor
 → TableAccess
+→ Heap / B+Tree
+→ Buffer Pool
+→ Fixed Relation Pages
 ```
 
-Phase A uses a retained `MemoryTable` implementation behind `TableAccess`.
-Later phases replace the access method with heap pages, a buffer pool, and
-B+Tree indexes without rewriting the SQL executor.
+The query executor remains storage-independent. `MemoryTable` is retained as a
+small reference implementation, while normal `Database` execution uses
+persistent heap pages and B+Tree indexes through the same `TableAccess`
+boundary.
 
 ## Direct API
 
@@ -29,6 +33,7 @@ from minipostgres import Database
 with Database.open("./demo") as db:
     db.execute("CREATE TABLE users (id INT NOT NULL, name TEXT)")
     db.execute("INSERT INTO users VALUES (1, 'Ada'), (2, 'Grace')")
+    db.execute("CREATE UNIQUE INDEX users_id ON users (id)")
     result = db.execute(
         "SELECT name FROM users WHERE id >= 1 ORDER BY id DESC"
     )
@@ -40,7 +45,7 @@ with Database.open("./demo") as db:
 `EXPLAIN` additionally returns a structured physical plan. `EXPLAIN` does not
 execute its child; `EXPLAIN ANALYZE` does.
 
-## Phase A behavior
+## Implemented behavior
 
 Implemented:
 
@@ -51,12 +56,19 @@ Implemented:
 - immutable logical and physical plan trees;
 - sequential scans, filters, projections, nested-loop and hash joins;
 - grouped and global aggregates, sorting, limits, inserts, updates, deletes;
-- structured `EXPLAIN` and executor cleanup after failure.
+- structured `EXPLAIN` and executor cleanup after failure;
+- checksummed 8192-byte pages and stable slotted heap TIDs;
+- schema-directed tuple versions and atomically replaced free-space maps;
+- fixed-frame buffer pool with pins, dirty state, Clock eviction, and a
+  WAL-before-data flush gate;
+- persistent heap tables and page-based B+Trees with split, merge, point
+  lookup, and range iteration;
+- `CREATE [UNIQUE] INDEX`, index maintenance for DML, clean restart, and
+  statement-local uniqueness rollback.
 
-Catalog metadata is durable in Phase A. Rows are intentionally volatile
-because `MemoryTable` is still the access method. Persistent heap storage,
-indexes, optimizer statistics, MVCC, WAL, recovery, Vacuum, and HOT belong to
-the later accepted phases.
+Phase B guarantees persistence across a clean close and restart. Crash recovery
+is deliberately not claimed yet: MVCC, WAL, checkpoints, recovery, Vacuum, and
+HOT belong to the accepted later phases.
 
 ## Verification
 

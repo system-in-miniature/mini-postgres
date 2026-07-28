@@ -36,10 +36,39 @@
 - one `parse()` call accepts exactly one complete statement;
 - DDL is synchronous and catalog metadata is atomically persisted;
 - inserts and updates validate the complete candidate set before mutation;
+- multi-row insert uniqueness failure rolls back earlier rows in the statement;
 - update/delete use source TIDs supplied by the child executor;
 - a runtime error does not leave an executor tree open;
 - `EXPLAIN` does not execute its child;
 - `EXPLAIN ANALYZE` executes it and reports root actual rows and elapsed time.
+
+## Persistent storage
+
+- every relation page is exactly 8192 bytes and checksum-validated on read;
+- a page is rejected if its encoded relation, fork, or page number differs from
+  the requested `PageKey`;
+- live heap slot IDs never change during deletion or compaction;
+- tuple decoding validates schema fingerprint, lengths, nullability, UTF-8,
+  booleans, and exact payload consumption;
+- the free-space map is advisory; a heap page is always checked before use;
+- only an unpinned buffer frame is evictable;
+- a page guard releases its pin at most once;
+- dirty-page flush invokes the WAL gate before relation-file write;
+- clean close flushes and fsyncs all published relations;
+- clean restart preserves catalog metadata, heap rows, B+Tree entries, and
+  index maintenance performed by insert, update, and delete.
+
+## B+Tree indexes
+
+- encoded key byte order matches the accepted scalar/composite value order;
+- NULL index keys are rejected in the frozen Phase B subset;
+- duplicate `(key, TID)` insertion is idempotent;
+- non-unique indexes may contain multiple TIDs for one key;
+- unique indexes reject a key already owned by another TID;
+- index search results are candidates and must be heap-rechecked by query
+  execution once Phase C introduces index scans;
+- leaf links remain ordered across split, borrow, merge, and clean restart;
+- range bounds are inclusive.
 
 ## Evidence
 
@@ -50,8 +79,15 @@
 | three-valued evaluation | `tests/property/test_expression_model.py` |
 | plan shapes and join lowering | `tests/unit/planner/` |
 | stable MemoryTable TIDs | `tests/property/test_memory_table_model.py` |
+| checksummed pages and stable slots | `tests/unit/storage/test_page_header.py`, `tests/property/test_slotted_page_model.py` |
+| tuple format | `tests/unit/storage/test_tuple_codec.py`, `tests/property/test_tuple_codec_property.py` |
+| disk and buffer ownership | `tests/unit/storage/test_disk_manager.py`, `tests/unit/storage/test_buffer_pool.py` |
+| persistent heap | `tests/integration/test_heap_table.py`, `tests/property/test_heap_table_model.py` |
+| ordered keys and persistent B+Tree | `tests/property/test_key_order.py`, `tests/unit/index/`, `tests/integration/test_btree_restart.py` |
+| engine restart and unique index publication | `tests/integration/test_engine_heap_restart.py`, `tests/integration/test_create_index.py`, `tests/contract/test_unique_index.py` |
 | Volcano operator behavior | `tests/unit/executor/test_query_operators.py` |
 | validated modifications | `tests/unit/executor/test_modify_operators.py` |
 | public SQL loop | `tests/integration/test_query_loop.py` |
 | structured EXPLAIN and cleanup | `tests/contract/test_explain.py`, `tests/integration/test_executor_cleanup.py` |
 | Phase A closure | `tests/acceptance/test_phase_a.py` |
+| Phase B closure | `tests/acceptance/test_phase_b.py` |
