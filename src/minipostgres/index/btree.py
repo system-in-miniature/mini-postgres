@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from bisect import bisect_left, bisect_right
+from typing import TYPE_CHECKING, cast
 
 from minipostgres.errors import CorruptPage, PageFull
 from minipostgres.index.pages import (
@@ -23,6 +24,9 @@ from minipostgres.storage.buffer import BufferPool, PageGuard
 from minipostgres.storage.constants import PAGE_BODY_SIZE, PageKind
 from minipostgres.storage.identifiers import btree_page_key, btree_relation
 from minipostgres.storage.page import decode_page, encode_page
+
+if TYPE_CHECKING:
+    from minipostgres.index.iterator import BTreeRangeIterator
 
 
 class BTree:
@@ -86,6 +90,12 @@ class BTree:
     def root_page_id(self) -> int:
         return self._root_page_id
 
+    @property
+    def relation(self):
+        """Return the physical relation identity used by this tree."""
+
+        return self._relation
+
     def search(self, key: bytes) -> tuple[TID, ...]:
         """Return every exact-key candidate in deterministic TID order."""
 
@@ -144,6 +154,71 @@ class BTree:
                 self._propagate_split(path, leaf_id, separator, right_id)
             else:
                 self._write_page(leaf_id, PageKind.BTREE_LEAF, body)
+
+    def delete(self, key: bytes, tid: TID) -> bool:
+        """Delete one exact key/TID pair and rebalance reachable pages."""
+
+        with self._lock:
+            leaf_id = self._locate_entry_leaf(key, tid)
+            if leaf_id is None:
+                return False
+            path = self._path_to_page(leaf_id)
+            if path is None:
+                raise CorruptPage("reachable BTree leaf has no root path")
+            leaf = self._read_leaf(leaf_id)
+            entries = list(leaf.entries)
+            target = LeafEntry(key, tid)
+            try:
+                entries.remove(target)
+            except ValueError:
+                return False
+            updated = LeafPage(
+                tuple(entries),
+                leaf.left_sibling,
+                leaf.right_sibling,
+            )
+            self._write_page(leaf_id, PageKind.BTREE_LEAF, encode_leaf(updated))
+            self._rebalance_leaf(leaf_id, updated, path)
+            self._refresh_all_separators(self._root_page_id, self._height)
+            return True
+
+    def range(self, lower: bytes, upper: bytes) -> BTreeRangeIterator:
+        """Create an inclusive sibling-backed range iterator."""
+
+        if lower > upper:
+            raise ValueError("range lower bound must not exceed upper bound")
+        from minipostgres.index.iterator import BTreeRangeIterator
+
+        return BTreeRangeIterator(self, lower, upper)
+
+    def first_leaf_page(self, key: bytes) -> int:
+        """Return the leftmost leaf that may contain the requested key."""
+
+        with self._lock:
+            leaf_id, _ = self._find_leaf(key)
+            leaf = self._read_leaf(leaf_id)
+            while leaf.left_sibling is not None:
+                left = self._read_leaf(leaf.left_sibling)
+                if left.entries and left.entries[-1].key >= key:
+                    leaf_id = leaf.left_sibling
+                    leaf = left
+                else:
+                    break
+            return leaf_id
+
+    def pin_leaf(self, page_id: int) -> tuple[PageGuard, LeafPage]:
+        """Pin and decode one leaf for a range iterator."""
+
+        key = btree_page_key(self.index_id, page_id)
+        guard = self._pool.fetch_page(key)
+        try:
+            decoded = decode_page(key, guard.page_bytes)
+            if decoded.kind is not PageKind.BTREE_LEAF:
+                raise CorruptPage(f"BTree page {page_id} is not a leaf")
+            return guard, decode_leaf(decoded.body)
+        except BaseException:
+            guard.release()
+            raise
 
     def _find_leaf(self, key: bytes) -> tuple[int, list[tuple[int, int]]]:
         page_id = self._root_page_id
@@ -262,6 +337,371 @@ class BTree:
             encode_internal(left),
         )
         return promoted, right_id
+
+    def _locate_entry_leaf(self, key: bytes, tid: TID) -> int | None:
+        leaf_id = self.first_leaf_page(key)
+        while True:
+            leaf = self._read_leaf(leaf_id)
+            if LeafEntry(key, tid) in leaf.entries:
+                return leaf_id
+            if (
+                leaf.right_sibling is None
+                or (leaf.entries and leaf.entries[-1].key > key)
+            ):
+                return None
+            right = self._read_leaf(leaf.right_sibling)
+            if right.entries and right.entries[0].key > key:
+                return None
+            leaf_id = leaf.right_sibling
+
+    def _path_to_page(self, target_page_id: int) -> list[tuple[int, int]] | None:
+        def visit(
+            page_id: int,
+            height: int,
+            path: list[tuple[int, int]],
+        ) -> list[tuple[int, int]] | None:
+            if height == 1:
+                return path if page_id == target_page_id else None
+            internal = self._read_internal(page_id)
+            for child_index, child_id in enumerate(internal.children):
+                found = visit(
+                    child_id,
+                    height - 1,
+                    [*path, (page_id, child_index)],
+                )
+                if found is not None:
+                    return found
+            return None
+
+        return visit(self._root_page_id, self._height, [])
+
+    def _rebalance_leaf(
+        self,
+        page_id: int,
+        page: LeafPage,
+        path: list[tuple[int, int]],
+    ) -> None:
+        if not path:
+            return
+        if len(encode_leaf(page)) >= PAGE_BODY_SIZE // 2 and page.entries:
+            return
+        parent_id, child_index = path[-1]
+        ancestors = path[:-1]
+        parent = self._read_internal(parent_id)
+
+        if child_index > 0:
+            left_id = parent.children[child_index - 1]
+            left = self._read_leaf(left_id)
+            if left.entries:
+                borrowed = left.entries[-1]
+                new_left = LeafPage(
+                    left.entries[:-1],
+                    left.left_sibling,
+                    left.right_sibling,
+                )
+                new_page = LeafPage(
+                    (borrowed, *page.entries),
+                    page.left_sibling,
+                    page.right_sibling,
+                )
+                if self._leaf_can_lend(new_left) and self._leaf_fits(new_page):
+                    keys = list(parent.keys)
+                    keys[child_index - 1] = new_page.entries[0].key
+                    self._write_page(
+                        left_id, PageKind.BTREE_LEAF, encode_leaf(new_left)
+                    )
+                    self._write_page(
+                        page_id, PageKind.BTREE_LEAF, encode_leaf(new_page)
+                    )
+                    self._write_page(
+                        parent_id,
+                        PageKind.BTREE_INTERNAL,
+                        encode_internal(
+                            InternalPage(tuple(keys), parent.children)
+                        ),
+                    )
+                    return
+
+        if child_index + 1 < len(parent.children):
+            right_id = parent.children[child_index + 1]
+            right = self._read_leaf(right_id)
+            if right.entries:
+                borrowed = right.entries[0]
+                new_page = LeafPage(
+                    (*page.entries, borrowed),
+                    page.left_sibling,
+                    page.right_sibling,
+                )
+                new_right = LeafPage(
+                    right.entries[1:],
+                    right.left_sibling,
+                    right.right_sibling,
+                )
+                if self._leaf_can_lend(new_right) and self._leaf_fits(new_page):
+                    keys = list(parent.keys)
+                    keys[child_index] = new_right.entries[0].key
+                    self._write_page(
+                        page_id, PageKind.BTREE_LEAF, encode_leaf(new_page)
+                    )
+                    self._write_page(
+                        right_id, PageKind.BTREE_LEAF, encode_leaf(new_right)
+                    )
+                    self._write_page(
+                        parent_id,
+                        PageKind.BTREE_INTERNAL,
+                        encode_internal(
+                            InternalPage(tuple(keys), parent.children)
+                        ),
+                    )
+                    return
+
+        if child_index > 0:
+            left_id = parent.children[child_index - 1]
+            left = self._read_leaf(left_id)
+            merged = LeafPage(
+                (*left.entries, *page.entries),
+                left.left_sibling,
+                page.right_sibling,
+            )
+            if self._leaf_fits(merged):
+                self._write_page(
+                    left_id, PageKind.BTREE_LEAF, encode_leaf(merged)
+                )
+                if page.right_sibling is not None:
+                    self._set_leaf_left_sibling(page.right_sibling, left_id)
+                reduced = self._remove_parent_child(parent, child_index)
+                self._write_page(
+                    parent_id,
+                    PageKind.BTREE_INTERNAL,
+                    encode_internal(reduced),
+                )
+                self._rebalance_internal(parent_id, reduced, ancestors)
+                return
+
+        if child_index + 1 < len(parent.children):
+            right_id = parent.children[child_index + 1]
+            right = self._read_leaf(right_id)
+            merged = LeafPage(
+                (*page.entries, *right.entries),
+                page.left_sibling,
+                right.right_sibling,
+            )
+            if self._leaf_fits(merged):
+                self._write_page(
+                    page_id, PageKind.BTREE_LEAF, encode_leaf(merged)
+                )
+                if right.right_sibling is not None:
+                    self._set_leaf_left_sibling(right.right_sibling, page_id)
+                reduced = self._remove_parent_child(parent, child_index + 1)
+                self._write_page(
+                    parent_id,
+                    PageKind.BTREE_INTERNAL,
+                    encode_internal(reduced),
+                )
+                self._rebalance_internal(parent_id, reduced, ancestors)
+
+    def _rebalance_internal(
+        self,
+        page_id: int,
+        page: InternalPage,
+        ancestors: list[tuple[int, int]],
+    ) -> None:
+        if page_id == self._root_page_id:
+            if len(page.children) == 1 and self._height > 1:
+                self._root_page_id = page.children[0]
+                self._height -= 1
+                self._write_meta()
+            return
+        if len(encode_internal(page)) >= PAGE_BODY_SIZE // 2:
+            return
+        if not ancestors:
+            raise CorruptPage("non-root internal page has no parent path")
+        parent_id, child_index = ancestors[-1]
+        higher = ancestors[:-1]
+        parent = self._read_internal(parent_id)
+
+        if child_index > 0:
+            left_id = parent.children[child_index - 1]
+            left = self._read_internal(left_id)
+            if left.keys:
+                new_left = InternalPage(left.keys[:-1], left.children[:-1])
+                new_page = InternalPage(
+                    (parent.keys[child_index - 1], *page.keys),
+                    (left.children[-1], *page.children),
+                )
+                if self._internal_can_lend(new_left) and self._internal_fits(
+                    new_page
+                ):
+                    keys = list(parent.keys)
+                    keys[child_index - 1] = left.keys[-1]
+                    self._write_page(
+                        left_id,
+                        PageKind.BTREE_INTERNAL,
+                        encode_internal(new_left),
+                    )
+                    self._write_page(
+                        page_id,
+                        PageKind.BTREE_INTERNAL,
+                        encode_internal(new_page),
+                    )
+                    self._write_page(
+                        parent_id,
+                        PageKind.BTREE_INTERNAL,
+                        encode_internal(
+                            InternalPage(tuple(keys), parent.children)
+                        ),
+                    )
+                    return
+
+        if child_index + 1 < len(parent.children):
+            right_id = parent.children[child_index + 1]
+            right = self._read_internal(right_id)
+            if right.keys:
+                new_page = InternalPage(
+                    (*page.keys, parent.keys[child_index]),
+                    (*page.children, right.children[0]),
+                )
+                new_right = InternalPage(right.keys[1:], right.children[1:])
+                if self._internal_can_lend(new_right) and self._internal_fits(
+                    new_page
+                ):
+                    keys = list(parent.keys)
+                    keys[child_index] = right.keys[0]
+                    self._write_page(
+                        page_id,
+                        PageKind.BTREE_INTERNAL,
+                        encode_internal(new_page),
+                    )
+                    self._write_page(
+                        right_id,
+                        PageKind.BTREE_INTERNAL,
+                        encode_internal(new_right),
+                    )
+                    self._write_page(
+                        parent_id,
+                        PageKind.BTREE_INTERNAL,
+                        encode_internal(
+                            InternalPage(tuple(keys), parent.children)
+                        ),
+                    )
+                    return
+
+        if child_index > 0:
+            left_id = parent.children[child_index - 1]
+            left = self._read_internal(left_id)
+            merged = InternalPage(
+                (*left.keys, parent.keys[child_index - 1], *page.keys),
+                (*left.children, *page.children),
+            )
+            if self._internal_fits(merged):
+                self._write_page(
+                    left_id,
+                    PageKind.BTREE_INTERNAL,
+                    encode_internal(merged),
+                )
+                reduced = self._remove_parent_child(parent, child_index)
+                self._write_page(
+                    parent_id,
+                    PageKind.BTREE_INTERNAL,
+                    encode_internal(reduced),
+                )
+                self._rebalance_internal(parent_id, reduced, higher)
+                return
+
+        if child_index + 1 < len(parent.children):
+            right_id = parent.children[child_index + 1]
+            right = self._read_internal(right_id)
+            merged = InternalPage(
+                (*page.keys, parent.keys[child_index], *right.keys),
+                (*page.children, *right.children),
+            )
+            if self._internal_fits(merged):
+                self._write_page(
+                    page_id,
+                    PageKind.BTREE_INTERNAL,
+                    encode_internal(merged),
+                )
+                reduced = self._remove_parent_child(parent, child_index + 1)
+                self._write_page(
+                    parent_id,
+                    PageKind.BTREE_INTERNAL,
+                    encode_internal(reduced),
+                )
+                self._rebalance_internal(parent_id, reduced, higher)
+
+    @staticmethod
+    def _remove_parent_child(
+        parent: InternalPage,
+        child_index: int,
+    ) -> InternalPage:
+        children = list(parent.children)
+        keys = list(parent.keys)
+        children.pop(child_index)
+        keys.pop(child_index - 1 if child_index > 0 else 0)
+        return InternalPage(tuple(keys), tuple(children))
+
+    def _set_leaf_left_sibling(self, page_id: int, left_id: int) -> None:
+        leaf = self._read_leaf(page_id)
+        self._write_page(
+            page_id,
+            PageKind.BTREE_LEAF,
+            encode_leaf(
+                LeafPage(leaf.entries, left_id, leaf.right_sibling)
+            ),
+        )
+
+    @staticmethod
+    def _leaf_fits(page: LeafPage) -> bool:
+        try:
+            encode_leaf(page)
+        except PageFull:
+            return False
+        return True
+
+    @staticmethod
+    def _leaf_can_lend(page: LeafPage) -> bool:
+        return bool(page.entries) and len(encode_leaf(page)) >= PAGE_BODY_SIZE // 2
+
+    @staticmethod
+    def _internal_fits(page: InternalPage) -> bool:
+        try:
+            encode_internal(page)
+        except PageFull:
+            return False
+        return True
+
+    @staticmethod
+    def _internal_can_lend(page: InternalPage) -> bool:
+        return bool(page.keys) and len(encode_internal(page)) >= PAGE_BODY_SIZE // 2
+
+    def _refresh_all_separators(
+        self,
+        page_id: int,
+        height: int,
+    ) -> bytes | None:
+        if height == 1:
+            leaf = self._read_leaf(page_id)
+            if not leaf.entries:
+                return None
+            return leaf.entries[0].key
+        internal = self._read_internal(page_id)
+        first_keys = [
+            self._refresh_all_separators(child, height - 1)
+            for child in internal.children
+        ]
+        if any(key is None for key in first_keys[1:]):
+            raise CorruptPage("non-leftmost BTree subtree is empty")
+        refreshed = InternalPage(
+            tuple(cast(bytes, key) for key in first_keys[1:]),
+            internal.children,
+        )
+        if refreshed != internal:
+            self._write_page(
+                page_id,
+                PageKind.BTREE_INTERNAL,
+                encode_internal(refreshed),
+            )
+        return first_keys[0]
 
     @staticmethod
     def _leaf_split_position(entries: tuple[LeafEntry, ...]) -> int:
