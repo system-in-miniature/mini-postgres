@@ -7,7 +7,6 @@ import shutil
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from time import perf_counter
 from types import TracebackType
 
 from minipostgres.catalog.catalog import Catalog
@@ -16,6 +15,7 @@ from minipostgres.catalog.statistics import StatisticsStore
 from minipostgres.errors import BindError, ConstraintViolation, DatabaseClosed
 from minipostgres.executor.base import ExecutionContext, OutputSlot, collect
 from minipostgres.executor.factory import build_executor
+from minipostgres.executor.instrumentation import InstrumentationTracker
 from minipostgres.index.btree import BTree
 from minipostgres.index.key import KeyCodec
 from minipostgres.maintenance.analyze import analyze_table
@@ -23,6 +23,7 @@ from minipostgres.planner.logical import LogicalPlan
 from minipostgres.planner.optimizer import CostBasedOptimizer
 from minipostgres.planner.physical import PhysicalPlan, PlanExplanation, explain_plan
 from minipostgres.planner.planner import Planner
+from minipostgres.row import ExecutionRow
 from minipostgres.sql.binder import Binder
 from minipostgres.sql.bound import (
     BoundAnalyze,
@@ -84,6 +85,7 @@ class Database:
             raise
         self._context = ExecutionContext(dict(self._accesses))
         self._planner = Planner()
+        self._instrumentation_tracker = InstrumentationTracker()
         self._lock = threading.RLock()
         self._closed = False
 
@@ -110,6 +112,11 @@ class Database:
     def statistics(self) -> StatisticsStore:
         self._ensure_open()
         return self._statistics
+
+    @property
+    def instrumentation_tracker(self) -> InstrumentationTracker:
+        self._ensure_open()
+        return self._instrumentation_tracker
 
     def execute(self, sql: str) -> QueryResult:
         with self._lock:
@@ -138,16 +145,18 @@ class Database:
                 command_tag="EXPLAIN",
                 plan=explain_plan(physical),
             )
-        started = perf_counter()
-        rows = collect(build_executor(physical, self._context))
-        elapsed_ms = (perf_counter() - started) * 1_000
+        session = self._instrumentation_tracker.session()
+        rows = collect(build_executor(physical, self._context, session))
+        public_rows: tuple[tuple[Scalar, ...], ...] = ()
+        columns: tuple[str, ...] = ()
+        if isinstance(statement.statement, BoundSelect):
+            public_rows = self._materialize_select(statement.statement, rows)
+            columns = tuple(item.name for item in statement.statement.items)
         return QueryResult(
+            columns=columns,
+            rows=public_rows,
             command_tag="EXPLAIN ANALYZE",
-            plan=explain_plan(
-                physical,
-                actual_rows=len(rows),
-                elapsed_ms=elapsed_ms,
-            ),
+            plan=explain_plan(physical, metrics=session.snapshot()),
         )
 
     def _create_table(self, statement: BoundCreateTable) -> QueryResult:
@@ -307,13 +316,7 @@ class Database:
         physical = self._optimize(logical)
         rows = collect(build_executor(physical, self._context))
         if isinstance(statement, BoundSelect):
-            materialized = tuple(
-                tuple(
-                    row.computed[OutputSlot(index)]
-                    for index in range(len(statement.items))
-                )
-                for row in rows
-            )
+            materialized = self._materialize_select(statement, rows)
             return QueryResult(
                 columns=tuple(item.name for item in statement.items),
                 rows=materialized,
@@ -328,6 +331,19 @@ class Database:
         else:
             tag = f"DELETE {affected}"
         return QueryResult(command_tag=tag)
+
+    @staticmethod
+    def _materialize_select(
+        statement: BoundSelect,
+        rows: list[ExecutionRow],
+    ) -> tuple[tuple[Scalar, ...], ...]:
+        return tuple(
+            tuple(
+                row.computed[OutputSlot(index)]
+                for index in range(len(statement.items))
+            )
+            for row in rows
+        )
 
     def _optimize(self, logical: LogicalPlan) -> PhysicalPlan:
         return CostBasedOptimizer(

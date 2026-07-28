@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from minipostgres.catalog.model import Column, TableMetadata
 from minipostgres.sql.bound import (
@@ -14,6 +16,9 @@ from minipostgres.sql.bound import (
     BoundSelectItem,
     BoundTable,
 )
+
+if TYPE_CHECKING:
+    from minipostgres.executor.instrumentation import NodeMetrics
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +122,7 @@ def explain_plan(
     *,
     actual_rows: int | None = None,
     elapsed_ms: float | None = None,
+    metrics: Mapping[int, NodeMetrics] | None = None,
 ) -> PlanExplanation:
     """Describe a physical tree without relying on formatted planner text."""
 
@@ -145,12 +151,21 @@ def explain_plan(
             )
         )
         children = (plan.child,)
+    node_metrics = None if metrics is None else metrics.get(id(plan))
     return PlanExplanation(
         node_type=node_type,
         details=tuple(details),
         estimated_rows=plan.estimated_rows,
         estimated_cost=plan.estimated_cost,
-        actual_rows=actual_rows,
-        elapsed_ms=elapsed_ms,
-        children=tuple(explain_plan(child) for child in children),
+        actual_rows=(
+            node_metrics.actual_rows
+            if node_metrics is not None
+            else actual_rows
+        ),
+        elapsed_ms=(
+            node_metrics.elapsed_ms
+            if node_metrics is not None
+            else elapsed_ms
+        ),
+        children=tuple(explain_plan(child, metrics=metrics) for child in children),
     )

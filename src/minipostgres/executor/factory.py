@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from minipostgres.executor.base import ExecutionContext, Executor
+from minipostgres.executor.instrumentation import InstrumentationSession
 from minipostgres.executor.operators import (
     AggregateExecutor,
     DeleteExecutor,
@@ -37,9 +38,21 @@ from minipostgres.planner.physical import (
 def build_executor(
     plan: PhysicalPlan,
     context: ExecutionContext,
+    instrumentation: InstrumentationSession | None = None,
 ) -> Executor:
-    """Recursively instantiate a query-only Phase A executor tree."""
+    """Recursively instantiate an optionally instrumented executor tree."""
 
+    executor = _build_executor(plan, context, instrumentation)
+    if instrumentation is not None:
+        return instrumentation.wrap(plan, executor)
+    return executor
+
+
+def _build_executor(
+    plan: PhysicalPlan,
+    context: ExecutionContext,
+    instrumentation: InstrumentationSession | None,
+) -> Executor:
     if isinstance(plan, PhysicalValues):
         return ValuesExecutor(plan.rows, context)
     if isinstance(plan, PhysicalSeqScan):
@@ -56,20 +69,26 @@ def build_executor(
             context,
         )
     if isinstance(plan, PhysicalFilter):
-        return FilterExecutor(build_executor(plan.child, context), plan.predicate)
+        return FilterExecutor(
+            build_executor(plan.child, context, instrumentation),
+            plan.predicate,
+        )
     if isinstance(plan, PhysicalProject):
-        return ProjectExecutor(build_executor(plan.child, context), plan.items)
+        return ProjectExecutor(
+            build_executor(plan.child, context, instrumentation),
+            plan.items,
+        )
     if isinstance(plan, PhysicalNestedLoopJoin):
         return NestedLoopJoinExecutor(
-            build_executor(plan.left, context),
-            build_executor(plan.right, context),
+            build_executor(plan.left, context, instrumentation),
+            build_executor(plan.right, context, instrumentation),
             plan.condition,
             context,
         )
     if isinstance(plan, PhysicalHashJoin):
         return HashJoinExecutor(
-            build_executor(plan.left, context),
-            build_executor(plan.right, context),
+            build_executor(plan.left, context, instrumentation),
+            build_executor(plan.right, context, instrumentation),
             plan.left_key,
             plan.right_key,
             context,
@@ -77,21 +96,24 @@ def build_executor(
         )
     if isinstance(plan, PhysicalAggregate):
         return AggregateExecutor(
-            build_executor(plan.child, context),
+            build_executor(plan.child, context, instrumentation),
             plan.group_by,
             plan.aggregates,
             context,
         )
     if isinstance(plan, PhysicalSort):
         return SortExecutor(
-            build_executor(plan.child, context),
+            build_executor(plan.child, context, instrumentation),
             plan.order_by,
             context,
         )
     if isinstance(plan, PhysicalLimit):
-        return LimitExecutor(build_executor(plan.child, context), plan.limit)
+        return LimitExecutor(
+            build_executor(plan.child, context, instrumentation),
+            plan.limit,
+        )
     if isinstance(plan, PhysicalModifyTable):
-        child = build_executor(plan.child, context)
+        child = build_executor(plan.child, context, instrumentation)
         if plan.operation == "INSERT":
             return InsertExecutor(
                 child,
