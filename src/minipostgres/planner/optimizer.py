@@ -257,12 +257,18 @@ class CostBasedOptimizer:
             + right.cost
             + self._model.hash_join(left.rows, right.rows)
         )
+        if left.rows < right.rows:
+            probe_plan, build_plan = right.plan, left.plan
+            probe_key, build_key = keys[1], keys[0]
+        else:
+            probe_plan, build_plan = left.plan, right.plan
+            probe_key, build_key = keys
         hashed = _Alternative(
             PhysicalHashJoin(
-                left.plan,
-                right.plan,
-                keys[0],
-                keys[1],
+                probe_plan,
+                build_plan,
+                probe_key,
+                build_key,
                 logical.condition,
                 estimated_rows=rows,
                 estimated_cost=hash_cost.total,
@@ -388,13 +394,14 @@ def _unwrap(expression: BoundExpr) -> BoundExpr:
 def _hash_join_keys(
     condition: BoundExpr,
 ) -> tuple[BoundColumn, BoundColumn] | None:
-    if (
-        isinstance(condition, BoundBinary)
-        and condition.operator == "="
-        and isinstance(condition.left, BoundColumn)
-        and isinstance(condition.right, BoundColumn)
-        and condition.left.binding.table_id
-        != condition.right.binding.table_id
-    ):
-        return condition.left, condition.right
+    for conjunct in _conjuncts(condition):
+        if (
+            isinstance(conjunct, BoundBinary)
+            and conjunct.operator == "="
+            and isinstance(conjunct.left, BoundColumn)
+            and isinstance(conjunct.right, BoundColumn)
+            and conjunct.left.binding.table_id
+            != conjunct.right.binding.table_id
+        ):
+            return conjunct.left, conjunct.right
     return None
