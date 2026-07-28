@@ -38,7 +38,7 @@ class TransactionManager:
             transaction.require_usable()
             if (
                 transaction.isolation is IsolationLevel.REPEATABLE_READ
-                and isinstance(transaction.repeatable_snapshot, Snapshot)
+                and transaction.repeatable_snapshot is not None
             ):
                 return transaction.repeatable_snapshot
             snapshot = Snapshot(

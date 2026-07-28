@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from minipostgres.errors import TransactionAborted
+from minipostgres.transaction.snapshot import Snapshot
 
 
 class IsolationLevel(Enum):
@@ -24,7 +25,7 @@ class Transaction:
     xid: int
     isolation: IsolationLevel
     state: TransactionState = TransactionState.ACTIVE
-    repeatable_snapshot: object | None = None
+    repeatable_snapshot: Snapshot | None = None
     has_writes: bool = False
     resources: set[object] = field(default_factory=lambda: set[object]())
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)

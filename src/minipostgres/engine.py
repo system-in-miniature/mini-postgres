@@ -189,6 +189,7 @@ class Database:
                 bound,
                 (BoundCreateTable, BoundCreateIndex, BoundAnalyze),
             ):
+                transaction.mark_failed()
                 raise BindError("DDL and ANALYZE are not allowed inside a transaction")
             try:
                 result = self._dispatch(bound, syntax)

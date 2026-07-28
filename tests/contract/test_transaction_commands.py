@@ -26,3 +26,13 @@ def test_failed_explicit_transaction_accepts_only_rollback(
     with pytest.raises(TransactionAborted):
         session.execute("SELECT 1")
     assert session.execute("ROLLBACK").command_tag == "ROLLBACK"
+
+
+def test_rejected_ddl_marks_explicit_transaction_failed(engine: Database) -> None:
+    session = engine.session()
+    session.execute("BEGIN")
+    with pytest.raises(BindError, match="not allowed inside a transaction"):
+        session.execute("CREATE TABLE forbidden (id INT)")
+    with pytest.raises(TransactionAborted):
+        session.execute("SELECT 1")
+    assert session.execute("ROLLBACK").command_tag == "ROLLBACK"
