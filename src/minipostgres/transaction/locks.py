@@ -69,6 +69,14 @@ class LockManager:
             self._owners[resource] = transaction.xid
             transaction.resources.add(resource)
 
+    def waiting_xids(self) -> frozenset[int]:
+        """Return a diagnostic snapshot of transactions queued for locks."""
+
+        with self._condition:
+            return frozenset(
+                xid for queue in self._queues.values() for xid in queue
+            )
+
     def release_all(self, transaction: Transaction) -> None:
         with self._condition:
             for owned_resource in tuple(transaction.resources):

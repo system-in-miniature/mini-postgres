@@ -1,9 +1,19 @@
 from concurrent.futures import ThreadPoolExecutor
+from time import monotonic, sleep
 
 import pytest
 
 from minipostgres.engine import Database
 from minipostgres.errors import DeadlockDetected
+
+
+def _wait_until_queued(engine: Database, xid: int) -> None:
+    deadline = monotonic() + 2
+    while monotonic() < deadline:
+        if xid in engine._transactions.locks.waiting_xids():
+            return
+        sleep(0.001)
+    raise AssertionError(f"transaction {xid} did not enter the lock queue")
 
 
 def test_two_row_deadlock_aborts_highest_xid(engine: Database) -> None:
@@ -24,6 +34,7 @@ def test_two_row_deadlock_aborts_highest_xid(engine: Database) -> None:
             low.execute,
             "UPDATE accounts SET value = 22 WHERE id = 2",
         )
+        _wait_until_queued(engine, low.transaction.xid)
         with pytest.raises(DeadlockDetected):
             high.execute("UPDATE accounts SET value = 12 WHERE id = 1")
         high.execute("ROLLBACK")
