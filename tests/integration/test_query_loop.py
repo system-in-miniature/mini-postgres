@@ -16,7 +16,7 @@ def test_insert_update_delete_and_expression_select(engine: Database) -> None:
     assert selected.rows == (("B", 31),)
 
 
-def test_catalog_survives_reopen_while_phase_a_rows_are_volatile(
+def test_catalog_and_rows_survive_reopen_with_persistent_heap_storage(
     tmp_path,
 ) -> None:
     with Database.open(tmp_path) as db:
@@ -24,4 +24,4 @@ def test_catalog_survives_reopen_while_phase_a_rows_are_volatile(
         db.execute("INSERT INTO users VALUES (1)")
 
     with Database.open(tmp_path) as reopened:
-        assert reopened.execute("SELECT COUNT(*) FROM users").rows == ((0,),)
+        assert reopened.execute("SELECT COUNT(*) FROM users").rows == ((1,),)

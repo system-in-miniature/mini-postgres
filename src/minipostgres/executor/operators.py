@@ -366,8 +366,14 @@ class InsertExecutor(ModificationExecutor):
         finally:
             self.child.close()
         access = self._context.table(self._table.table_id)
-        for candidate in candidates:
-            access.insert(candidate)
+        inserted: list[TID] = []
+        try:
+            for candidate in candidates:
+                inserted.append(access.insert(candidate))
+        except BaseException:
+            for tid in reversed(inserted):
+                access.delete(tid)
+            raise
         self._affected = len(candidates)
 
     def _validate(self, values: tuple[Scalar, ...]) -> tuple[Scalar, ...]:
@@ -419,10 +425,24 @@ class UpdateExecutor(ModificationExecutor):
             self.child.close()
         access = self._context.table(self._table.table_id)
         affected = 0
-        for tid, values in candidates:
-            if access.replace(tid, values) is None:
-                raise ConstraintViolation("UPDATE source tuple disappeared")
-            affected += 1
+        applied: list[tuple[TID, tuple[Scalar, ...]]] = []
+        try:
+            for tid, values in candidates:
+                old_values = access.fetch(tid)
+                if old_values is None:
+                    raise ConstraintViolation("UPDATE source tuple disappeared")
+                replacement = access.replace(tid, values)
+                if replacement is None:
+                    raise ConstraintViolation("UPDATE source tuple disappeared")
+                applied.append((replacement, old_values))
+                affected += 1
+        except BaseException as error:
+            for replacement, old_values in reversed(applied):
+                if access.replace(replacement, old_values) is None:
+                    raise RuntimeError(
+                        "failed to roll back partial UPDATE"
+                    ) from error
+            raise
         self._affected = affected
 
 
