@@ -22,7 +22,21 @@ from minipostgres.sql.bound import (
     BoundOrderItem,
     BoundSelectItem,
 )
+from minipostgres.storage.indexed import IndexedTableAccess
 from minipostgres.types import Scalar
+
+
+def _table_row(
+    table_id: int,
+    columns: tuple[Column, ...],
+    tid: TID,
+    values: tuple[Scalar, ...],
+) -> ExecutionRow:
+    cells = {
+        ColumnBinding(table_id, column.column_id): value
+        for column, value in zip(columns, values, strict=True)
+    }
+    return ExecutionRow(cells, {table_id: tid})
 
 
 class ValuesExecutor(Executor):
@@ -67,14 +81,84 @@ class SeqScanExecutor(Executor):
         except StopIteration:
             return None
         table = self._context.table(self._table_id)
-        cells = {
-            ColumnBinding(self._table_id, column.column_id): value
-            for column, value in zip(table.schema.columns, values, strict=True)
-        }
-        return ExecutionRow(cells, {self._table_id: tid})
+        return _table_row(self._table_id, table.schema.columns, tid, values)
 
     def _close(self) -> None:
         self._iterator = None
+
+
+class IndexScanExecutor(Executor):
+    """Fetch index candidates from the heap and recheck the full predicate."""
+
+    def __init__(
+        self,
+        table_id: int,
+        index_id: int,
+        lower_key: bytes,
+        upper_key: bytes,
+        predicate: BoundExpr | None,
+        context: ExecutionContext,
+    ) -> None:
+        super().__init__()
+        self._table_id = table_id
+        self._index_id = index_id
+        self._lower_key = lower_key
+        self._upper_key = upper_key
+        self._predicate = predicate
+        self._context = context
+        self._iterator = None
+
+    def _open(self) -> None:
+        access = self._access()
+        binding = next(
+            (
+                candidate
+                for candidate in access.indexes
+                if candidate.metadata.index_id == self._index_id
+            ),
+            None,
+        )
+        if binding is None:
+            raise ConstraintViolation(f"unknown runtime index: {self._index_id}")
+        if self._lower_key == self._upper_key:
+            self._iterator = iter(
+                (self._lower_key, tid)
+                for tid in binding.tree.search(self._lower_key)
+            )
+        else:
+            self._iterator = binding.tree.range(
+                self._lower_key,
+                self._upper_key,
+            )
+
+    def _next(self) -> ExecutionRow | None:
+        assert self._iterator is not None
+        access = self._access()
+        for _, tid in self._iterator:
+            values = access.fetch(tid)
+            if values is None:
+                continue
+            row = _table_row(
+                self._table_id,
+                access.schema.columns,
+                tid,
+                values,
+            )
+            if self._predicate is None or evaluate(self._predicate, row) is True:
+                return row
+        return None
+
+    def _close(self) -> None:
+        close = getattr(self._iterator, "close", None)
+        if callable(close):
+            close()
+        self._iterator = None
+
+    def _access(self) -> IndexedTableAccess:
+        access = self._context.table(self._table_id)
+        if not isinstance(access, IndexedTableAccess):
+            raise ConstraintViolation("index scan requires indexed table access")
+        return access
 
 
 class UnaryExecutor(Executor):

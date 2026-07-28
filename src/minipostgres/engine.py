@@ -19,7 +19,9 @@ from minipostgres.executor.factory import build_executor
 from minipostgres.index.btree import BTree
 from minipostgres.index.key import KeyCodec
 from minipostgres.maintenance.analyze import analyze_table
-from minipostgres.planner.physical import PlanExplanation, explain_plan
+from minipostgres.planner.logical import LogicalPlan
+from minipostgres.planner.optimizer import CostBasedOptimizer
+from minipostgres.planner.physical import PhysicalPlan, PlanExplanation, explain_plan
 from minipostgres.planner.planner import Planner
 from minipostgres.sql.binder import Binder
 from minipostgres.sql.bound import (
@@ -130,7 +132,7 @@ class Database:
 
     def _explain(self, statement: BoundExplain) -> QueryResult:
         logical = self._planner.logical(statement.statement)
-        physical = self._planner.physical(logical)
+        physical = self._optimize(logical)
         if not statement.analyze:
             return QueryResult(
                 command_tag="EXPLAIN",
@@ -302,7 +304,7 @@ class Database:
         statement: BoundStatement,
     ) -> QueryResult:
         logical = self._planner.logical(statement)
-        physical = self._planner.physical(logical)
+        physical = self._optimize(logical)
         rows = collect(build_executor(physical, self._context))
         if isinstance(statement, BoundSelect):
             materialized = tuple(
@@ -326,6 +328,13 @@ class Database:
         else:
             tag = f"DELETE {affected}"
         return QueryResult(command_tag=tag)
+
+    def _optimize(self, logical: LogicalPlan) -> PhysicalPlan:
+        return CostBasedOptimizer(
+            self._catalog,
+            self._statistics,
+            self._accesses,
+        ).optimize(logical)
 
     def close(self) -> None:
         with self._lock:

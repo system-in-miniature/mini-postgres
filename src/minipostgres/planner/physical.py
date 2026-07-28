@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from minipostgres.catalog.model import Column, TableMetadata
 from minipostgres.sql.bound import (
@@ -16,11 +16,12 @@ from minipostgres.sql.bound import (
 )
 
 
+@dataclass(frozen=True, slots=True)
 class PhysicalPlan:
     """Marker base class for immutable physical operators."""
 
-    estimated_rows: float | None = None
-    estimated_cost: float | None = None
+    estimated_rows: float | None = field(default=None, kw_only=True)
+    estimated_cost: float | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +52,8 @@ class PhysicalIndexScan(PhysicalPlan):
     table: BoundTable
     index_id: int
     predicate: BoundExpr | None = None
+    lower_key: bytes | None = None
+    upper_key: bytes | None = None
 
 
 @dataclass(frozen=True, slots=True)

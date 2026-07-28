@@ -8,6 +8,7 @@ from minipostgres.executor.operators import (
     DeleteExecutor,
     FilterExecutor,
     HashJoinExecutor,
+    IndexScanExecutor,
     InsertExecutor,
     LimitExecutor,
     NestedLoopJoinExecutor,
@@ -21,6 +22,7 @@ from minipostgres.planner.physical import (
     PhysicalAggregate,
     PhysicalFilter,
     PhysicalHashJoin,
+    PhysicalIndexScan,
     PhysicalLimit,
     PhysicalModifyTable,
     PhysicalNestedLoopJoin,
@@ -42,6 +44,17 @@ def build_executor(
         return ValuesExecutor(plan.rows, context)
     if isinstance(plan, PhysicalSeqScan):
         return SeqScanExecutor(plan.table.metadata.table_id, context)
+    if isinstance(plan, PhysicalIndexScan):
+        if plan.lower_key is None or plan.upper_key is None:
+            raise TypeError("physical index scan is missing encoded bounds")
+        return IndexScanExecutor(
+            plan.table.metadata.table_id,
+            plan.index_id,
+            plan.lower_key,
+            plan.upper_key,
+            plan.predicate,
+            context,
+        )
     if isinstance(plan, PhysicalFilter):
         return FilterExecutor(build_executor(plan.child, context), plan.predicate)
     if isinstance(plan, PhysicalProject):
