@@ -187,11 +187,15 @@ class HeapTable:
         self,
         tid: TID,
         xid: int,
+        statuses: TransactionStatusTable,
         values: tuple[Scalar, ...],
     ) -> TID | None:
         with self._lock:
             old = self.physical_version(tid)
-            if old is None or old.xmax != 0:
+            if old is None or (
+                old.xmax != 0
+                and statuses.get(old.xmax) is not TransactionStatus.ABORTED
+            ):
                 return None
             replacement = self.insert_version(xid, values)
             self._set_version(
@@ -200,10 +204,18 @@ class HeapTable:
             )
             return replacement
 
-    def delete_version(self, tid: TID, xid: int) -> bool:
+    def delete_version(
+        self,
+        tid: TID,
+        xid: int,
+        statuses: TransactionStatusTable,
+    ) -> bool:
         with self._lock:
             old = self.physical_version(tid)
-            if old is None or old.xmax != 0:
+            if old is None or (
+                old.xmax != 0
+                and statuses.get(old.xmax) is not TransactionStatus.ABORTED
+            ):
                 return False
             self._set_version(
                 tid,

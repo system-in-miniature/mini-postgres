@@ -188,6 +188,7 @@ class IndexedTableAccess:
         replacement = heap.replace_version(
             visible_tid,
             transaction.xid,
+            statuses,
             validated,
         )
         if replacement is None:
@@ -213,7 +214,11 @@ class IndexedTableAccess:
         deleted = (
             False
             if visible is None
-            else heap.delete_version(visible[0], transaction.xid)
+            else heap.delete_version(
+                visible[0],
+                transaction.xid,
+                statuses,
+            )
         )
         transaction.has_writes |= deleted
         return deleted
