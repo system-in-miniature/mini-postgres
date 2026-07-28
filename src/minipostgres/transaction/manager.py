@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+import threading
+
+from minipostgres.transaction.model import (
+    IsolationLevel,
+    Transaction,
+    TransactionState,
+)
+from minipostgres.transaction.snapshot import Snapshot
+from minipostgres.transaction.status import TransactionStatus, TransactionStatusTable
+
+
+class TransactionManager:
+    def __init__(self, *, next_xid: int = 2) -> None:
+        self._next_xid = next_xid
+        self._active: dict[int, Transaction] = {}
+        self.statuses = TransactionStatusTable()
+        self._lock = threading.RLock()
+
+    @property
+    def next_xid(self) -> int:
+        with self._lock:
+            return self._next_xid
+
+    def begin(
+        self,
+        isolation: IsolationLevel = IsolationLevel.READ_COMMITTED,
+    ) -> Transaction:
+        with self._lock:
+            transaction = Transaction(self._next_xid, isolation)
+            self._next_xid += 1
+            self._active[transaction.xid] = transaction
+            return transaction
+
+    def statement_snapshot(self, transaction: Transaction) -> Snapshot:
+        with self._lock:
+            transaction.require_usable()
+            if (
+                transaction.isolation is IsolationLevel.REPEATABLE_READ
+                and isinstance(transaction.repeatable_snapshot, Snapshot)
+            ):
+                return transaction.repeatable_snapshot
+            snapshot = Snapshot(
+                self._next_xid,
+                frozenset(
+                    xid for xid in self._active if xid != transaction.xid
+                ),
+            )
+            if transaction.isolation is IsolationLevel.REPEATABLE_READ:
+                transaction.repeatable_snapshot = snapshot
+            return snapshot
+
+    def commit(self, transaction: Transaction) -> None:
+        with self._lock:
+            transaction.mark_committed()
+            self.statuses.set(transaction.xid, TransactionStatus.COMMITTED)
+            self._active.pop(transaction.xid, None)
+
+    def abort(self, transaction: Transaction) -> None:
+        with self._lock:
+            if transaction.state is not TransactionState.ABORTED:
+                transaction.mark_aborted()
+            self.statuses.set(transaction.xid, TransactionStatus.ABORTED)
+            self._active.pop(transaction.xid, None)
+
+    def active_transactions(self) -> tuple[Transaction, ...]:
+        with self._lock:
+            return tuple(self._active.values())

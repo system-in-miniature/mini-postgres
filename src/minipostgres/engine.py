@@ -12,7 +12,11 @@ from types import TracebackType
 from minipostgres.catalog.catalog import Catalog
 from minipostgres.catalog.model import Column, IndexMetadata, TableMetadata
 from minipostgres.catalog.statistics import StatisticsStore
-from minipostgres.errors import BindError, ConstraintViolation, DatabaseClosed
+from minipostgres.errors import (
+    BindError,
+    ConstraintViolation,
+    DatabaseClosed,
+)
 from minipostgres.executor.base import ExecutionContext, OutputSlot, collect
 from minipostgres.executor.factory import build_executor
 from minipostgres.executor.instrumentation import InstrumentationTracker
@@ -27,11 +31,14 @@ from minipostgres.row import ExecutionRow
 from minipostgres.sql.binder import Binder
 from minipostgres.sql.bound import (
     BoundAnalyze,
+    BoundBegin,
+    BoundCommit,
     BoundCreateIndex,
     BoundCreateTable,
     BoundDelete,
     BoundExplain,
     BoundInsert,
+    BoundRollback,
     BoundSelect,
     BoundStatement,
     BoundUpdate,
@@ -42,6 +49,8 @@ from minipostgres.storage.disk import DiskManager, relation_path
 from minipostgres.storage.heap import HeapTable
 from minipostgres.storage.identifiers import btree_relation, heap_relation
 from minipostgres.storage.indexed import IndexBinding, IndexedTableAccess
+from minipostgres.transaction.manager import TransactionManager
+from minipostgres.transaction.model import IsolationLevel, Transaction, TransactionState
 from minipostgres.types import DataType, Scalar
 
 
@@ -86,8 +95,10 @@ class Database:
         self._context = ExecutionContext(dict(self._accesses))
         self._planner = Planner()
         self._instrumentation_tracker = InstrumentationTracker()
+        self._transactions = TransactionManager()
         self._lock = threading.RLock()
         self._closed = False
+        self._default_session = DatabaseSession(self)
 
     @classmethod
     def open(
@@ -119,23 +130,92 @@ class Database:
         return self._instrumentation_tracker
 
     def execute(self, sql: str) -> QueryResult:
+        return self._default_session.execute(sql)
+
+    def session(
+        self,
+        *,
+        isolation: IsolationLevel = IsolationLevel.READ_COMMITTED,
+    ) -> DatabaseSession:
+        self._ensure_open()
+        return DatabaseSession(self, isolation=isolation)
+
+    def execute_for_session(
+        self,
+        session: DatabaseSession,
+        sql: str,
+    ) -> QueryResult:
         with self._lock:
             self._ensure_open()
-            syntax = parse(sql)
-            bound = Binder(self._catalog).bind(syntax)
-            if isinstance(bound, BoundCreateTable):
-                return self._create_table(bound)
-            if isinstance(bound, BoundCreateIndex):
-                return self._create_index(bound)
-            if isinstance(bound, BoundAnalyze):
-                return self._analyze(bound)
-            if isinstance(bound, BoundExplain):
-                return self._explain(bound)
-            if isinstance(bound, (BoundSelect, BoundInsert, BoundUpdate, BoundDelete)):
-                return self._execute_relational(bound)
-            raise BindError(
-                f"{type(syntax).__name__} is reserved for a later project phase"
-            )
+            try:
+                syntax = parse(sql)
+                bound = Binder(self._catalog).bind(syntax)
+            except BaseException:
+                transaction = session.transaction
+                if (
+                    transaction is not None
+                    and transaction.state is TransactionState.ACTIVE
+                ):
+                    transaction.mark_failed()
+                raise
+            if isinstance(bound, BoundBegin):
+                if session.transaction is not None:
+                    raise BindError("transaction is already active")
+                session.transaction = self._transactions.begin(session.isolation)
+                return QueryResult(command_tag="BEGIN")
+            if isinstance(bound, BoundCommit):
+                transaction = session.transaction
+                if transaction is None:
+                    raise BindError("COMMIT without BEGIN")
+                transaction.require_usable()
+                self._transactions.commit(transaction)
+                session.transaction = None
+                return QueryResult(command_tag="COMMIT")
+            if isinstance(bound, BoundRollback):
+                transaction = session.transaction
+                if transaction is None:
+                    raise BindError("ROLLBACK without BEGIN")
+                self._transactions.abort(transaction)
+                session.transaction = None
+                return QueryResult(command_tag="ROLLBACK")
+            transaction = session.transaction
+            implicit = transaction is None
+            if transaction is None:
+                transaction = self._transactions.begin(session.isolation)
+            else:
+                transaction.require_usable()
+            self._transactions.statement_snapshot(transaction)
+            if session.transaction is not None and isinstance(
+                bound,
+                (BoundCreateTable, BoundCreateIndex, BoundAnalyze),
+            ):
+                raise BindError("DDL and ANALYZE are not allowed inside a transaction")
+            try:
+                result = self._dispatch(bound, syntax)
+            except BaseException:
+                if implicit:
+                    self._transactions.abort(transaction)
+                elif transaction.state is TransactionState.ACTIVE:
+                    transaction.mark_failed()
+                raise
+            if implicit:
+                self._transactions.commit(transaction)
+            return result
+
+    def _dispatch(self, bound: BoundStatement, syntax: object) -> QueryResult:
+        if isinstance(bound, BoundCreateTable):
+            return self._create_table(bound)
+        if isinstance(bound, BoundCreateIndex):
+            return self._create_index(bound)
+        if isinstance(bound, BoundAnalyze):
+            return self._analyze(bound)
+        if isinstance(bound, BoundExplain):
+            return self._explain(bound)
+        if isinstance(bound, (BoundSelect, BoundInsert, BoundUpdate, BoundDelete)):
+            return self._execute_relational(bound)
+        raise BindError(
+            f"{type(syntax).__name__} is reserved for a later project phase"
+        )
 
     def _explain(self, statement: BoundExplain) -> QueryResult:
         logical = self._planner.logical(statement.statement)
@@ -381,3 +461,20 @@ class Database:
         traceback: TracebackType | None,
     ) -> None:
         self.close()
+
+
+class DatabaseSession:
+    """One client-visible explicit transaction owner."""
+
+    def __init__(
+        self,
+        database: Database,
+        *,
+        isolation: IsolationLevel = IsolationLevel.READ_COMMITTED,
+    ) -> None:
+        self._database = database
+        self.isolation = isolation
+        self.transaction: Transaction | None = None
+
+    def execute(self, sql: str) -> QueryResult:
+        return self._database.execute_for_session(self, sql)
