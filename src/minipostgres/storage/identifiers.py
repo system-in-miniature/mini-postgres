@@ -42,13 +42,25 @@ class PageKey:
         _validate_uint64(self.page_id, "page_id")
 
 
+def heap_relation(table_id: int) -> RelationId:
+    """Build the canonical physical identity for a heap relation."""
+
+    return RelationId(ForkKind.HEAP, table_id)
+
+
+def btree_relation(index_id: int) -> RelationId:
+    """Build the canonical physical identity for a B+Tree relation."""
+
+    return RelationId(ForkKind.BTREE, index_id)
+
+
 def heap_page_key(table_id: int, page_id: int) -> PageKey:
     """Build the canonical page identity for a heap relation."""
 
-    return PageKey(RelationId(ForkKind.HEAP, table_id), page_id)
+    return PageKey(heap_relation(table_id), page_id)
 
 
 def btree_page_key(index_id: int, page_id: int) -> PageKey:
     """Build the canonical page identity for a B+Tree relation."""
 
-    return PageKey(RelationId(ForkKind.BTREE, index_id), page_id)
+    return PageKey(btree_relation(index_id), page_id)
