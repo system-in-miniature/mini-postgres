@@ -1,7 +1,8 @@
-"""Small checksummed control file updated through atomic replacement."""
+"""Checksummed recovery metadata published through atomic replacement."""
 
 from __future__ import annotations
 
+import json
 import os
 import struct
 import zlib
@@ -9,71 +10,90 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from minipostgres.errors import CorruptWal
+from minipostgres.transaction.status import TransactionStatus
 
 _MAGIC = b"MPCF"
 _VERSION = 1
-_STRUCT = struct.Struct(">4sBBHQI")
-_CHECKSUM_OFFSET = _STRUCT.size - 4
+_HEADER = struct.Struct(">4sB3xII")
 
 
 @dataclass(frozen=True, slots=True)
 class ControlState:
     checkpoint_lsn: int
     clean_shutdown: bool
+    next_xid: int = 2
+    statuses: tuple[tuple[int, TransactionStatus], ...] = ()
 
 
 class ControlFile:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
 
+    @property
+    def temporary_path(self) -> Path:
+        return self.path.with_name(f".{self.path.name}.tmp")
+
     def load(self) -> ControlState:
         if not self.path.exists():
             return ControlState(0, False)
         encoded = self.path.read_bytes()
-        if len(encoded) != _STRUCT.size:
+        if len(encoded) < _HEADER.size:
             raise CorruptWal("invalid control file length")
-        magic, version, clean, reserved, checkpoint_lsn, stored_crc = (
-            _STRUCT.unpack(encoded)
-        )
-        mutable = bytearray(encoded)
-        mutable[_CHECKSUM_OFFSET:] = b"\x00" * 4
+        magic, version, payload_length, stored_crc = _HEADER.unpack_from(encoded)
+        payload = encoded[_HEADER.size :]
         if (
             magic != _MAGIC
             or version != _VERSION
-            or clean not in {0, 1}
-            or reserved != 0
-            or zlib.crc32(mutable) & 0xFFFFFFFF != stored_crc
+            or payload_length != len(payload)
+            or zlib.crc32(payload) & 0xFFFFFFFF != stored_crc
         ):
             raise CorruptWal("control file checksum or header is invalid")
-        return ControlState(checkpoint_lsn, bool(clean))
+        try:
+            document = json.loads(payload.decode("utf-8"))
+            statuses = tuple(
+                (int(xid), TransactionStatus(status))
+                for xid, status in document["statuses"]
+            )
+            return ControlState(
+                checkpoint_lsn=int(document["checkpoint_lsn"]),
+                clean_shutdown=bool(document["clean_shutdown"]),
+                next_xid=int(document["next_xid"]),
+                statuses=statuses,
+            )
+        except (KeyError, TypeError, ValueError, UnicodeDecodeError) as error:
+            raise CorruptWal("control file payload is invalid") from error
 
     def store(self, state: ControlState) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        encoded = bytearray(
-            _STRUCT.pack(
-                _MAGIC,
-                _VERSION,
-                int(state.clean_shutdown),
-                0,
-                state.checkpoint_lsn,
-                0,
-            )
+        payload = json.dumps(
+            {
+                "checkpoint_lsn": state.checkpoint_lsn,
+                "clean_shutdown": state.clean_shutdown,
+                "next_xid": state.next_xid,
+                "statuses": [
+                    [xid, status.value] for xid, status in state.statuses
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        header = _HEADER.pack(
+            _MAGIC,
+            _VERSION,
+            len(payload),
+            zlib.crc32(payload) & 0xFFFFFFFF,
         )
-        encoded[_CHECKSUM_OFFSET:] = (
-            zlib.crc32(encoded) & 0xFFFFFFFF
-        ).to_bytes(4, "big")
-        temporary = self.path.with_name(f".{self.path.name}.tmp")
         descriptor = os.open(
-            temporary,
+            self.temporary_path,
             os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
             0o600,
         )
         try:
-            _write_all(descriptor, encoded)
+            _write_all(descriptor, header + payload)
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-        os.replace(temporary, self.path)
+        os.replace(self.temporary_path, self.path)
         directory = os.open(self.path.parent, os.O_RDONLY)
         try:
             os.fsync(directory)
@@ -81,11 +101,10 @@ class ControlFile:
             os.close(directory)
 
 
-def _write_all(descriptor: int, data: bytes | bytearray) -> None:
+def _write_all(descriptor: int, data: bytes) -> None:
     written = 0
     while written < len(data):
         count = os.write(descriptor, data[written:])
         if count <= 0:
             raise OSError("short control-file write")
         written += count
-

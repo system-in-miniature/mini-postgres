@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from collections import deque
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import cast
@@ -30,10 +31,15 @@ type LockKey = TupleLockKey | UniqueKeyLockKey
 class LockManager:
     """Exclusive reentrant FIFO resource locks with synchronous detection."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        deadlock_victim_handler: Callable[[Transaction], None] | None = None,
+    ) -> None:
         self._owners: dict[LockKey, int] = {}
         self._queues: dict[LockKey, deque[int]] = {}
         self._transactions: dict[int, Transaction] = {}
+        self._deadlock_victim_handler = deadlock_victim_handler
         self._condition = threading.Condition(threading.RLock())
 
     def acquire(self, transaction: Transaction, resource: LockKey) -> None:
@@ -90,5 +96,8 @@ class LockManager:
     def _abort_victim(self, xid: int) -> None:
         transaction = self._transactions.get(xid)
         if transaction is not None:
+            if self._deadlock_victim_handler is not None:
+                self._deadlock_victim_handler(transaction)
+                return
             transaction.mark_failed()
             self.release_all(transaction)

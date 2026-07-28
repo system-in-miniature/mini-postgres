@@ -92,8 +92,7 @@ class IndexedTableAccess:
         keys = self._keys(validated)
         self._acquire_unique_keys(transaction, locks, keys)
         self._check_unique_global(keys, heap, transaction.xid, statuses)
-        tid = heap.insert_version(transaction.xid, validated)
-        transaction.has_writes = True
+        tid = heap.insert_version(transaction, validated)
         for binding, key in keys:
             binding.tree.insert(key, tid)
         return tid
@@ -187,13 +186,12 @@ class IndexedTableAccess:
         )
         replacement = heap.replace_version(
             visible_tid,
-            transaction.xid,
+            transaction,
             statuses,
             validated,
         )
         if replacement is None:
             return None
-        transaction.has_writes = True
         for binding, key in new_keys:
             binding.tree.insert(key, replacement)
         return replacement
@@ -216,11 +214,10 @@ class IndexedTableAccess:
             if visible is None
             else heap.delete_version(
                 visible[0],
-                transaction.xid,
+                transaction,
                 statuses,
             )
         )
-        transaction.has_writes |= deleted
         return deleted
 
     def delete(self, tid: TID) -> bool:

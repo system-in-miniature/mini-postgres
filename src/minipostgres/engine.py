@@ -52,6 +52,10 @@ from minipostgres.storage.indexed import IndexBinding, IndexedTableAccess
 from minipostgres.transaction.manager import TransactionManager
 from minipostgres.transaction.model import IsolationLevel, Transaction, TransactionState
 from minipostgres.types import DataType, Scalar
+from minipostgres.wal.checkpoint import sharp_checkpoint
+from minipostgres.wal.control_file import ControlFile
+from minipostgres.wal.manager import WalManager
+from minipostgres.wal.recovery import recover
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,12 +82,26 @@ class Database:
         self._catalog = catalog
         self._statistics = StatisticsStore.open(root)
         self._disk = DiskManager.open(root)
-        self._buffer_pool = BufferPool(self._disk, buffer_frames)
+        self._wal = WalManager.open(root / "wal.log")
+        self._control = ControlFile(root / "control")
+        control_state = self._control.load()
+        recovery = recover(
+            self._wal,
+            self._disk,
+            start_lsn=control_state.checkpoint_lsn,
+            initial_statuses=control_state.statuses,
+            next_xid=control_state.next_xid,
+        )
+        self._buffer_pool = BufferPool(
+            self._disk,
+            buffer_frames,
+            wal_flush_gate=self._wal.flush,
+        )
         self._accesses: dict[int, IndexedTableAccess] = {}
         try:
             for table in catalog.tables():
                 self._accesses[table.table_id] = IndexedTableAccess(
-                    HeapTable.open(self._buffer_pool, table)
+                    HeapTable.open(self._buffer_pool, table, wal=self._wal)
                 )
             for index in catalog.indexes():
                 self._accesses[index.table_id].add_index(
@@ -95,7 +113,11 @@ class Database:
         self._context = ExecutionContext(dict(self._accesses))
         self._planner = Planner()
         self._instrumentation_tracker = InstrumentationTracker()
-        self._transactions = TransactionManager()
+        self._transactions = TransactionManager(
+            next_xid=recovery.next_xid,
+            statuses=recovery.statuses,
+            wal=self._wal,
+        )
         self._lock = threading.RLock()
         self._closed = False
         self._default_session = DatabaseSession(self)
@@ -274,7 +296,9 @@ class Database:
         self._disk.page_count(relation)
         self._disk.sync_relation(relation)
         self._catalog.publish_table(metadata)
-        access = IndexedTableAccess(HeapTable.open(self._buffer_pool, metadata))
+        access = IndexedTableAccess(
+            HeapTable.open(self._buffer_pool, metadata, wal=self._wal)
+        )
         self._accesses[metadata.table_id] = access
         self._context.register_table(access)
         for column in metadata.schema.columns:
@@ -452,18 +476,42 @@ class Database:
             self._accesses,
         ).optimize(logical)
 
+    def checkpoint(self, *, clean_shutdown: bool = False) -> int:
+        with self._lock:
+            active = self._transactions.active_transactions()
+            status_map = dict(self._transactions.statuses.snapshot())
+            for transaction in active:
+                status_map[transaction.xid] = (
+                    self._transactions.statuses.get(transaction.xid)
+                )
+            relations = tuple(
+                heap_relation(table.table_id) for table in self._catalog.tables()
+            ) + tuple(
+                btree_relation(index.index_id)
+                for index in self._catalog.indexes()
+            )
+            return sharp_checkpoint(
+                self._wal,
+                self._buffer_pool,
+                self._disk,
+                relations,
+                self._control,
+                next_xid=self._transactions.next_xid,
+                statuses=tuple(sorted(status_map.items())),
+                clean_shutdown=clean_shutdown,
+            )
+
     def close(self) -> None:
         with self._lock:
             if self._closed:
                 return
-            self._closed = True
             try:
-                self._buffer_pool.flush_all()
-                for table in self._catalog.tables():
-                    self._disk.sync_relation(heap_relation(table.table_id))
-                for index in self._catalog.indexes():
-                    self._disk.sync_relation(btree_relation(index.index_id))
+                for transaction in self._transactions.active_transactions():
+                    self._transactions.abort(transaction)
+                self.checkpoint(clean_shutdown=True)
             finally:
+                self._closed = True
+                self._wal.close()
                 self._disk.close()
 
     def _ensure_open(self) -> None:

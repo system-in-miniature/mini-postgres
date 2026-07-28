@@ -15,10 +15,13 @@ from minipostgres.storage.identifiers import heap_page_key, heap_relation
 from minipostgres.storage.page import decode_page, encode_page
 from minipostgres.storage.slotted import SlottedPage
 from minipostgres.storage.tuple import SYSTEM_XID, TupleCodec, TupleVersion
+from minipostgres.transaction.model import Transaction
 from minipostgres.transaction.snapshot import Snapshot
 from minipostgres.transaction.status import TransactionStatus, TransactionStatusTable
 from minipostgres.transaction.visibility import is_visible
 from minipostgres.types import Scalar
+from minipostgres.wal.manager import WalManager
+from minipostgres.wal.records import BeginRecord, HeapPageImagesRecord
 
 
 class HeapTable:
@@ -29,6 +32,7 @@ class HeapTable:
         buffer_pool: BufferPool,
         metadata: TableMetadata,
         free_space: FreeSpaceMap,
+        wal: WalManager | None = None,
     ) -> None:
         self._pool = buffer_pool
         self._metadata = metadata
@@ -37,6 +41,7 @@ class HeapTable:
         self.free_space = free_space
         self._relation = heap_relation(metadata.table_id)
         self._codec = TupleCodec(metadata.schema)
+        self._wal = wal
         self._lock = threading.RLock()
 
     @classmethod
@@ -44,6 +49,8 @@ class HeapTable:
         cls,
         buffer_pool: BufferPool,
         metadata: TableMetadata,
+        *,
+        wal: WalManager | None = None,
     ) -> HeapTable:
         """Open a heap and repair missing free-space entries from actual pages."""
 
@@ -53,7 +60,7 @@ class HeapTable:
             / f"table-{metadata.table_id}.fsm",
             maximum_free_bytes=PAGE_BODY_SIZE,
         )
-        heap = cls(buffer_pool, metadata, free_space)
+        heap = cls(buffer_pool, metadata, free_space, wal)
         heap._bootstrap_free_space()
         return heap
 
@@ -75,14 +82,26 @@ class HeapTable:
                     return tid
             return self._insert_new_page(encoded_tuple)
 
-    def insert_version(self, xid: int, values: tuple[Scalar, ...]) -> TID:
+    def insert_version(
+        self,
+        transaction: Transaction,
+        values: tuple[Scalar, ...],
+    ) -> TID:
         validated = self.schema.validate_row(values)
-        encoded = self._codec.encode(TupleVersion(xid, 0, None, validated))
+        encoded = self._codec.encode(
+            TupleVersion(transaction.xid, 0, None, validated)
+        )
         with self._lock:
             for page_id in self.free_space.candidate_pages(len(encoded)):
-                if (tid := self._try_insert(page_id, encoded)) is not None:
+                if (
+                    tid := self._try_insert(
+                        page_id,
+                        encoded,
+                        transaction=transaction,
+                    )
+                ) is not None:
                     return tid
-            return self._insert_new_page(encoded)
+            return self._insert_new_page(encoded, transaction=transaction)
 
     def fetch_visible(
         self,
@@ -186,7 +205,7 @@ class HeapTable:
     def replace_version(
         self,
         tid: TID,
-        xid: int,
+        transaction: Transaction,
         statuses: TransactionStatusTable,
         values: tuple[Scalar, ...],
     ) -> TID | None:
@@ -197,17 +216,23 @@ class HeapTable:
                 and statuses.get(old.xmax) is not TransactionStatus.ABORTED
             ):
                 return None
-            replacement = self.insert_version(xid, values)
+            replacement = self.insert_version(transaction, values)
             self._set_version(
                 tid,
-                TupleVersion(old.xmin, xid, replacement, old.values),
+                TupleVersion(
+                    old.xmin,
+                    transaction.xid,
+                    replacement,
+                    old.values,
+                ),
+                transaction=transaction,
             )
             return replacement
 
     def delete_version(
         self,
         tid: TID,
-        xid: int,
+        transaction: Transaction,
         statuses: TransactionStatusTable,
     ) -> bool:
         with self._lock:
@@ -219,7 +244,13 @@ class HeapTable:
                 return False
             self._set_version(
                 tid,
-                TupleVersion(old.xmin, xid, old.next_tid, old.values),
+                TupleVersion(
+                    old.xmin,
+                    transaction.xid,
+                    old.next_tid,
+                    old.values,
+                ),
+                transaction=transaction,
             )
             return True
 
@@ -266,12 +297,18 @@ class HeapTable:
                 current = predecessors[current]
             return current
 
-    def _set_version(self, tid: TID, version: TupleVersion) -> None:
+    def _set_version(
+        self,
+        tid: TID,
+        version: TupleVersion,
+        *,
+        transaction: Transaction,
+    ) -> None:
         key = heap_page_key(self.table_id, tid.page_id)
         with self._pool.fetch_page(key) as guard:
             page = self._slotted_page(guard)
             page.replace(tid.slot_id, self._codec.encode(version))
-            self._publish_page(guard, page)
+            self._publish_page(guard, page, transaction=transaction)
             self.free_space.record(tid.page_id, page.available_free_bytes)
 
     def fetch(self, tid: TID) -> tuple[Scalar, ...] | None:
@@ -341,7 +378,13 @@ class HeapTable:
                 self.free_space.record(tid.page_id, page.available_free_bytes)
                 return True
 
-    def _try_insert(self, page_id: int, encoded_tuple: bytes) -> TID | None:
+    def _try_insert(
+        self,
+        page_id: int,
+        encoded_tuple: bytes,
+        *,
+        transaction: Transaction | None = None,
+    ) -> TID | None:
         if page_id >= self._pool.page_count(self._relation):
             raise CorruptPage("free-space map refers to an unallocated heap page")
         key = heap_page_key(self.table_id, page_id)
@@ -352,15 +395,20 @@ class HeapTable:
             except PageFull:
                 self.free_space.record(page_id, page.available_free_bytes)
                 return None
-            self._publish_page(guard, page)
+            self._publish_page(guard, page, transaction=transaction)
             self.free_space.record(page_id, page.available_free_bytes)
             return TID(page_id, slot_id)
 
-    def _insert_new_page(self, encoded_tuple: bytes) -> TID:
+    def _insert_new_page(
+        self,
+        encoded_tuple: bytes,
+        *,
+        transaction: Transaction | None = None,
+    ) -> TID:
         with self._pool.new_page(self._relation, PageKind.HEAP) as guard:
             page = SlottedPage.empty(guard.key.page_id)
             slot_id = page.insert(encoded_tuple)
-            self._publish_page(guard, page)
+            self._publish_page(guard, page, transaction=transaction)
             self.free_space.record(
                 guard.key.page_id,
                 page.available_free_bytes,
@@ -375,17 +423,34 @@ class HeapTable:
             return SlottedPage.empty(guard.key.page_id)
         return SlottedPage.from_body(guard.key.page_id, decoded.body)
 
-    @staticmethod
-    def _publish_page(guard: PageGuard, page: SlottedPage) -> None:
-        guard.replace_bytes(
-            encode_page(
-                guard.key,
-                PageKind.HEAP,
-                page_lsn=0,
-                body=page.to_body(),
-            )
+    def _publish_page(
+        self,
+        guard: PageGuard,
+        page: SlottedPage,
+        *,
+        transaction: Transaction | None = None,
+    ) -> None:
+        page_lsn = 0
+        if transaction is not None and self._wal is not None:
+            if not transaction.has_writes:
+                self._wal.append(transaction.xid, BeginRecord())
+                transaction.has_writes = True
+            page_lsn = self._wal.end_lsn
+        encoded = encode_page(
+            guard.key,
+            PageKind.HEAP,
+            page_lsn=page_lsn,
+            body=page.to_body(),
         )
-        guard.mark_dirty(page_lsn=0)
+        if transaction is not None and self._wal is not None:
+            actual_lsn = self._wal.append(
+                transaction.xid,
+                HeapPageImagesRecord(((guard.key, encoded),)),
+            )
+            if actual_lsn != page_lsn:
+                raise RuntimeError("WAL append position changed during heap mutation")
+        guard.replace_bytes(encoded)
+        guard.mark_dirty(page_lsn=page_lsn)
 
     def _bootstrap_free_space(self) -> None:
         page_count = self._pool.page_count(self._relation)

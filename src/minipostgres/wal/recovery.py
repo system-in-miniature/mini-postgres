@@ -32,10 +32,12 @@ def recover(
     disk: DiskManager,
     *,
     start_lsn: int = 0,
+    initial_statuses: tuple[tuple[int, TransactionStatus], ...] = (),
+    next_xid: int = 2,
 ) -> RecoveryResult:
-    statuses = TransactionStatusTable()
+    statuses = TransactionStatusTable(dict(initial_statuses))
     begun: set[int] = set()
-    maximum_xid = 1
+    maximum_xid = next_xid - 1
     redone = 0
     for entry in wal.scan():
         maximum_xid = max(maximum_xid, entry.xid)
@@ -62,5 +64,8 @@ def recover(
                     redone += 1
     for xid in begun:
         if statuses.get(xid) is TransactionStatus.IN_PROGRESS:
+            statuses.set(xid, TransactionStatus.ABORTED)
+    for xid, status in statuses.snapshot():
+        if status is TransactionStatus.IN_PROGRESS:
             statuses.set(xid, TransactionStatus.ABORTED)
     return RecoveryResult(statuses, maximum_xid + 1, redone)

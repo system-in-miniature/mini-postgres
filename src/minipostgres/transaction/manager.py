@@ -10,14 +10,25 @@ from minipostgres.transaction.model import (
 )
 from minipostgres.transaction.snapshot import Snapshot
 from minipostgres.transaction.status import TransactionStatus, TransactionStatusTable
+from minipostgres.wal.manager import WalManager
+from minipostgres.wal.records import AbortRecord, CommitRecord
 
 
 class TransactionManager:
-    def __init__(self, *, next_xid: int = 2) -> None:
+    def __init__(
+        self,
+        *,
+        next_xid: int = 2,
+        statuses: TransactionStatusTable | None = None,
+        wal: WalManager | None = None,
+    ) -> None:
         self._next_xid = next_xid
         self._active: dict[int, Transaction] = {}
-        self.statuses = TransactionStatusTable()
-        self.locks = LockManager()
+        self.statuses = statuses or TransactionStatusTable()
+        self.locks = LockManager(
+            deadlock_victim_handler=self._abort_deadlock_victim
+        )
+        self._wal = wal
         self._lock = threading.RLock()
 
     @property
@@ -55,6 +66,9 @@ class TransactionManager:
 
     def commit(self, transaction: Transaction) -> None:
         with self._lock:
+            if transaction.has_writes and self._wal is not None:
+                self._wal.append(transaction.xid, CommitRecord())
+                self._wal.flush(self._wal.end_lsn)
             transaction.mark_committed()
             self.statuses.set(transaction.xid, TransactionStatus.COMMITTED)
             self._active.pop(transaction.xid, None)
@@ -62,6 +76,13 @@ class TransactionManager:
 
     def abort(self, transaction: Transaction) -> None:
         with self._lock:
+            if (
+                transaction.has_writes
+                and transaction.state is not TransactionState.ABORTED
+                and self._wal is not None
+            ):
+                self._wal.append(transaction.xid, AbortRecord())
+                self._wal.flush(self._wal.end_lsn)
             if transaction.state is not TransactionState.ABORTED:
                 transaction.mark_aborted()
             self.statuses.set(transaction.xid, TransactionStatus.ABORTED)
@@ -71,3 +92,7 @@ class TransactionManager:
     def active_transactions(self) -> tuple[Transaction, ...]:
         with self._lock:
             return tuple(self._active.values())
+
+    def _abort_deadlock_victim(self, transaction: Transaction) -> None:
+        transaction.mark_failed()
+        self.abort(transaction)
