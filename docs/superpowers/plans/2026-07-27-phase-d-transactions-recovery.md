@@ -134,7 +134,18 @@ git commit -m "feat: model transactions and snapshots"
 def test_visibility_status_cases(
     xmin_status, xmax, xmax_status, visible
 ) -> None:
-    assert is_visible(version(...), snapshot, current_xid, statuses) is visible
+    statuses = TransactionStatusTable()
+    statuses.set(10, xmin_status)
+    if xmax:
+        statuses.set(xmax, xmax_status)
+    candidate = TupleVersion(
+        xmin=10,
+        xmax=xmax,
+        next_tid=None,
+        values=(1,),
+    )
+    snapshot = Snapshot(xmax=20, active_xids=frozenset())
+    assert is_visible(candidate, snapshot, current_xid=7, statuses=statuses) is visible
 
 
 def test_current_transaction_sees_own_insert_and_hides_own_delete() -> None:
@@ -950,4 +961,3 @@ git commit -m "docs: accept MiniPostgres transaction recovery phase"
 - Unclean startup rebuilds derived indexes before serving queries.
 - Crash acceptance uses subprocess evidence and every named boundary.
 - No task adds replication, SSI, wire protocol, or course material.
-
