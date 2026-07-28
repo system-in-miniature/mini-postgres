@@ -503,8 +503,12 @@ class InsertExecutor(ModificationExecutor):
                 else:
                     inserted.append(access.insert(candidate))
         except BaseException:
-            for tid in reversed(inserted):
-                access.delete(tid)
+            # MVCC rollback is logical: the transaction is marked aborted and
+            # its inserted versions become invisible. Physical cleanup belongs
+            # to Vacuum and must not overwrite a newer page with LSN zero.
+            if not _has_mvcc(self._context):
+                for tid in reversed(inserted):
+                    access.delete(tid)
             raise
         self._affected = len(candidates)
 
@@ -599,11 +603,12 @@ class UpdateExecutor(ModificationExecutor):
                 applied.append((replacement, old_values))
                 affected += 1
         except BaseException as error:
-            for replacement, old_values in reversed(applied):
-                if access.replace(replacement, old_values) is None:
-                    raise RuntimeError(
-                        "failed to roll back partial UPDATE"
-                    ) from error
+            if not _has_mvcc(self._context):
+                for replacement, old_values in reversed(applied):
+                    if access.replace(replacement, old_values) is None:
+                        raise RuntimeError(
+                            "failed to roll back partial UPDATE"
+                        ) from error
             raise
         self._affected = affected
 
