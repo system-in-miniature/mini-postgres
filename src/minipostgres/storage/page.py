@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from minipostgres.errors import CorruptPage, RowTooLarge
 from minipostgres.storage.constants import (
     PAGE_FORMAT_VERSION,
+    PAGE_HEADER_SIZE,
     PAGE_MAGIC,
     PAGE_SIZE,
     PageKind,
@@ -21,6 +22,8 @@ _HEADER = struct.Struct(">4sBBBBQQQHHHHI")
 _CHECKSUM_OFFSET = _HEADER.size - struct.calcsize(">I")
 _MAX_BODY_SIZE = PAGE_SIZE - _HEADER.size
 _MAX_UINT64 = 2**64 - 1
+
+assert _HEADER.size == PAGE_HEADER_SIZE
 
 
 @dataclass(frozen=True, slots=True)

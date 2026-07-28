@@ -43,6 +43,10 @@ class RowTooLarge(MiniPostgresError):
     """A tuple cannot fit in one heap page."""
 
 
+class PageFull(MiniPostgresError):
+    """A page cannot fit a requested tuple or index entry."""
+
+
 class CorruptPage(MiniPostgresError):
     """A page failed structural or checksum validation."""
 
@@ -57,4 +61,3 @@ class CatalogError(MiniPostgresError):
 
 class DatabaseClosed(MiniPostgresError):
     """An operation was attempted on a closed database."""
-
