@@ -10,6 +10,11 @@ from minipostgres.errors import ConstraintViolation, TypeMismatch
 from minipostgres.executor.memory import TableAccess
 from minipostgres.index.btree import BTree
 from minipostgres.index.key import KeyCodec
+from minipostgres.maintenance.horizon import (
+    VersionDisposition,
+    classify_version,
+)
+from minipostgres.maintenance.vacuum import VacuumResult
 from minipostgres.row import TID
 from minipostgres.storage.heap import HeapTable
 from minipostgres.transaction.locks import (
@@ -62,6 +67,14 @@ class IndexedTableAccess:
         ):
             raise ValueError("index is already registered")
         self._indexes.append(binding)
+
+    def rebuild_indexes(self, statuses: TransactionStatusTable) -> None:
+        """Populate empty derived indexes from committed heap truth."""
+
+        heap = self._mvcc_heap()
+        for tid, values in heap.scan_globally_live(statuses):
+            for binding, key in self._keys(values):
+                binding.tree.insert(key, tid)
 
     def insert(self, values: tuple[Scalar, ...]) -> TID:
         validated = self.schema.validate_row(values)
@@ -231,6 +244,42 @@ class IndexedTableAccess:
             if not binding.tree.delete(key, tid):
                 raise RuntimeError("published index is missing a deleted heap TID")
         return True
+
+    def vacuum(
+        self,
+        transaction: Transaction,
+        *,
+        horizon: int,
+        statuses: TransactionStatusTable,
+    ) -> VacuumResult:
+        heap = self._mvcc_heap()
+        versions = tuple(heap.scan_versions())
+        removed_versions = 0
+        removed_indexes = 0
+        reclaimed_bytes = 0
+        for tid, version in versions:
+            if (
+                classify_version(
+                    version,
+                    horizon=horizon,
+                    statuses=statuses,
+                )
+                is VersionDisposition.KEEP
+            ):
+                continue
+            for binding, key in self._keys(version.values):
+                if binding.tree.delete(key, tid):
+                    removed_indexes += 1
+            reclaimed = heap.reclaim_version(tid, transaction)
+            if reclaimed:
+                removed_versions += 1
+                reclaimed_bytes += reclaimed
+        return VacuumResult(
+            heap.page_count,
+            removed_versions,
+            removed_indexes,
+            reclaimed_bytes,
+        )
 
     def _keys(
         self,

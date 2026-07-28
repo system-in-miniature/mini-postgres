@@ -23,6 +23,8 @@ from minipostgres.executor.instrumentation import InstrumentationTracker
 from minipostgres.index.btree import BTree
 from minipostgres.index.key import KeyCodec
 from minipostgres.maintenance.analyze import analyze_table
+from minipostgres.maintenance.horizon import cleanup_horizon
+from minipostgres.maintenance.vacuum import VacuumResult
 from minipostgres.planner.logical import LogicalPlan
 from minipostgres.planner.optimizer import CostBasedOptimizer
 from minipostgres.planner.physical import PhysicalPlan, PlanExplanation, explain_plan
@@ -42,6 +44,7 @@ from minipostgres.sql.bound import (
     BoundSelect,
     BoundStatement,
     BoundUpdate,
+    BoundVacuum,
 )
 from minipostgres.sql.parser import parse
 from minipostgres.storage.buffer import BufferPool
@@ -53,7 +56,7 @@ from minipostgres.transaction.manager import TransactionManager
 from minipostgres.transaction.model import IsolationLevel, Transaction, TransactionState
 from minipostgres.types import DataType, Scalar
 from minipostgres.wal.checkpoint import sharp_checkpoint
-from minipostgres.wal.control_file import ControlFile
+from minipostgres.wal.control_file import ControlFile, ControlState
 from minipostgres.wal.manager import WalManager
 from minipostgres.wal.recovery import recover
 
@@ -66,6 +69,7 @@ class QueryResult:
     rows: tuple[tuple[Scalar, ...], ...] = ()
     command_tag: str = ""
     plan: PlanExplanation | None = None
+    maintenance: VacuumResult | None = None
 
 
 class Database:
@@ -92,6 +96,11 @@ class Database:
             initial_statuses=control_state.statuses,
             next_xid=control_state.next_xid,
         )
+        if not control_state.clean_shutdown:
+            for index in catalog.indexes():
+                relation_path(root, btree_relation(index.index_id)).unlink(
+                    missing_ok=True
+                )
         self._buffer_pool = BufferPool(
             self._disk,
             buffer_frames,
@@ -107,6 +116,14 @@ class Database:
                 self._accesses[index.table_id].add_index(
                     self._open_index_binding(index)
                 )
+            if not control_state.clean_shutdown:
+                for access in self._accesses.values():
+                    access.rebuild_indexes(recovery.statuses)
+                self._buffer_pool.flush_all()
+                for index in catalog.indexes():
+                    self._disk.sync_relation(
+                        btree_relation(index.index_id)
+                    )
         except BaseException:
             self._disk.close()
             raise
@@ -117,6 +134,14 @@ class Database:
             next_xid=recovery.next_xid,
             statuses=recovery.statuses,
             wal=self._wal,
+        )
+        self._control.store(
+            ControlState(
+                checkpoint_lsn=control_state.checkpoint_lsn,
+                clean_shutdown=False,
+                next_xid=recovery.next_xid,
+                statuses=recovery.statuses.snapshot(),
+            )
         )
         self._lock = threading.RLock()
         self._closed = False
@@ -208,7 +233,7 @@ class Database:
         snapshot = self._transactions.statement_snapshot(transaction)
         if session.transaction is not None and isinstance(
             bound,
-            (BoundCreateTable, BoundCreateIndex, BoundAnalyze),
+            (BoundCreateTable, BoundCreateIndex, BoundAnalyze, BoundVacuum),
         ):
             transaction.mark_failed()
             raise BindError("DDL and ANALYZE are not allowed inside a transaction")
@@ -246,6 +271,8 @@ class Database:
             return self._create_index(bound)
         if isinstance(bound, BoundAnalyze):
             return self._analyze(bound)
+        if isinstance(bound, BoundVacuum):
+            return self._vacuum(bound, context)
         if isinstance(bound, BoundExplain):
             return self._explain(bound, context)
         if isinstance(bound, (BoundSelect, BoundInsert, BoundUpdate, BoundDelete)):
@@ -416,6 +443,41 @@ class Database:
             )
             self._statistics.replace(statistics)
         return QueryResult(command_tag="ANALYZE")
+
+    def _vacuum(
+        self,
+        statement: BoundVacuum,
+        context: ExecutionContext,
+    ) -> QueryResult:
+        assert context.transaction is not None
+        assert context.statuses is not None
+        tables = (
+            self._catalog.tables()
+            if statement.table is None
+            else (statement.table,)
+        )
+        horizon = cleanup_horizon(
+            self._transactions.active_transactions(),
+            next_xid=self._transactions.next_xid,
+        )
+        results = [
+            self._accesses[table.table_id].vacuum(
+                context.transaction,
+                horizon=horizon,
+                statuses=context.statuses,
+            )
+            for table in tables
+        ]
+        combined = VacuumResult(
+            sum(result.pages_scanned for result in results),
+            sum(result.dead_versions_removed for result in results),
+            sum(result.index_entries_removed for result in results),
+            sum(result.reclaimed_bytes for result in results),
+        )
+        return QueryResult(
+            command_tag=f"VACUUM {combined.dead_versions_removed}",
+            maintenance=combined,
+        )
 
     def _open_index_binding(self, metadata: IndexMetadata) -> IndexBinding:
         table = self._catalog.table(metadata.table_id)

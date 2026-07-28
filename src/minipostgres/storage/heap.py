@@ -202,6 +202,28 @@ class HeapTable:
                     rows.append(resolved)
             return iter(rows)
 
+    def scan_globally_live(
+        self,
+        statuses: TransactionStatusTable,
+    ) -> Iterator[tuple[TID, tuple[Scalar, ...]]]:
+        """Return committed live rows for recovery-time index rebuilding."""
+
+        with self._lock:
+            physical = tuple(self.scan_versions())
+            continuations = {
+                version.next_tid
+                for _, version in physical
+                if version.next_tid is not None
+            }
+            rows: list[tuple[TID, tuple[Scalar, ...]]] = []
+            for tid, _ in physical:
+                if tid in continuations:
+                    continue
+                resolved = self.resolve_globally_live(tid, 0, statuses)
+                if resolved is not None:
+                    rows.append(resolved)
+            return iter(rows)
+
     def replace_version(
         self,
         tid: TID,
@@ -278,6 +300,29 @@ class HeapTable:
                     for slot_id in page.live_slots()
                 )
         return iter(rows)
+
+    @property
+    def page_count(self) -> int:
+        return self._pool.page_count(self._relation)
+
+    def reclaim_version(self, tid: TID, transaction: Transaction) -> int:
+        """WAL-log removal of one physical version and return reclaimed bytes."""
+
+        with self._lock:
+            key = heap_page_key(self.table_id, tid.page_id)
+            with self._pool.fetch_page(key) as guard:
+                page = self._slotted_page(guard)
+                try:
+                    removed = page.delete(tid.slot_id)
+                except KeyError:
+                    return 0
+                page.compact()
+                self._publish_page(guard, page, transaction=transaction)
+                self.free_space.record(
+                    tid.page_id,
+                    page.available_free_bytes,
+                )
+                return len(removed)
 
     def root_tid(self, tid: TID) -> TID:
         """Return the oldest physical member of the chain containing ``tid``."""
