@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from threading import RLock
 from types import TracebackType
 from typing import Protocol, runtime_checkable
@@ -32,6 +33,20 @@ class AllocatingPageDisk(PageDisk, Protocol):
         relation: RelationId,
         kind: PageKind | None = None,
     ) -> PageKey: ...
+
+
+@runtime_checkable
+class CountingPageDisk(PageDisk, Protocol):
+    """Page disk extension used to inspect relation length."""
+
+    def page_count(self, relation: RelationId) -> int: ...
+
+
+@runtime_checkable
+class RootedPageDisk(PageDisk, Protocol):
+    """Page disk extension exposing the database storage root."""
+
+    root: Path
 
 
 @dataclass(slots=True)
@@ -86,6 +101,21 @@ class BufferPool:
     def resident_page_count(self) -> int:
         with self._lock:
             return len(self._page_table)
+
+    @property
+    def storage_root(self) -> Path:
+        """Return the database root required by persistent sidecars."""
+
+        if not isinstance(self._disk, RootedPageDisk):
+            raise TypeError("configured page disk does not expose a storage root")
+        return self._disk.root
+
+    def page_count(self, relation: RelationId) -> int:
+        """Return the number of allocated pages in a physical relation."""
+
+        if not isinstance(self._disk, CountingPageDisk):
+            raise TypeError("configured page disk cannot count relation pages")
+        return self._disk.page_count(relation)
 
     def fetch_page(self, key: PageKey) -> PageGuard:
         """Pin a resident page or load it into a free/evictable frame."""
