@@ -17,6 +17,9 @@ dev = [
     "pytest>=8.4",
     "ruff>=0.12",
 ]
+postgres18 = [
+    "psycopg[binary]>=3.2",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/minipostgres"]
@@ -36,4 +39,3 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 include = ["src", "tests"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
-

@@ -94,6 +94,7 @@ class TableStatistics:
     row_count: int
     page_count: int
     columns: Mapping[int, ColumnStatistics]
+    stale: bool = False
 
     def __post_init__(self) -> None:
         if type(self.table_id) is not int or self.table_id <= 0:
@@ -106,6 +107,8 @@ class TableStatistics:
         if any(type(column_id) is not int or column_id < 0 for column_id in columns):
             raise CatalogError("statistics column IDs must be nonnegative")
         object.__setattr__(self, "columns", MappingProxyType(columns))
+        if type(self.stale) is not bool:
+            raise CatalogError("statistics stale flag must be boolean")
 
 
 class StatisticsStore:
@@ -182,6 +185,21 @@ class StatisticsStore:
                     self._tables[statistics.table_id] = previous
                 raise
 
+    def mark_stale(self, table_id: int) -> None:
+        with self._lock:
+            current = self._tables.get(table_id)
+            if current is None or current.stale:
+                return
+            self.replace(
+                TableStatistics(
+                    current.table_id,
+                    current.row_count,
+                    current.page_count,
+                    current.columns,
+                    stale=True,
+                )
+            )
+
     def _persist(self) -> None:
         document = {
             "format_version": STATISTICS_FORMAT_VERSION,
@@ -231,6 +249,18 @@ def _required_float(document: dict[str, object], key: str) -> float:
     if type(value) is float:
         return value
     raise CatalogError(f"invalid statistics float field: {key}")
+
+
+def _optional_bool(
+    document: dict[str, object],
+    key: str,
+    *,
+    default: bool,
+) -> bool:
+    value = document.get(key, default)
+    if type(value) is not bool:
+        raise CatalogError(f"invalid statistics boolean field: {key}")
+    return value
 
 
 def _scalar_to_document(value: Scalar) -> dict[str, object]:
@@ -289,6 +319,7 @@ def _table_to_document(table: TableStatistics) -> dict[str, object]:
         ],
         "page_count": table.page_count,
         "row_count": table.row_count,
+        "stale": table.stale,
         "table_id": table.table_id,
     }
 
@@ -334,4 +365,5 @@ def _table_from_document(document: dict[str, object]) -> TableStatistics:
         _required_int(document, "row_count"),
         _required_int(document, "page_count"),
         columns,
+        stale=_optional_bool(document, "stale", default=False),
     )

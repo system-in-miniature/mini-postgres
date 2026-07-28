@@ -341,6 +341,67 @@ class HeapTable:
                 )
                 return len(removed)
 
+    def version_chain(
+        self,
+        root_tid: TID,
+    ) -> tuple[tuple[TID, TupleVersion], ...]:
+        with self._lock:
+            chain: list[tuple[TID, TupleVersion]] = []
+            current: TID | None = root_tid
+            visited: set[TID] = set()
+            while current is not None:
+                if current in visited:
+                    raise CorruptPage("tuple version chain contains a cycle")
+                if current.page_id != root_tid.page_id:
+                    raise CorruptPage("HOT chain leaves its root heap page")
+                visited.add(current)
+                version = self.physical_version(current)
+                if version is None:
+                    raise CorruptPage("tuple version chain points to a dead slot")
+                chain.append((current, version))
+                current = version.next_tid
+            return tuple(chain)
+
+    def prune_chain(
+        self,
+        root_tid: TID,
+        removable: set[TID],
+        transaction: Transaction,
+    ) -> tuple[int, int]:
+        """Unlink and reclaim selected non-root HOT members."""
+
+        removed = 0
+        reclaimed = 0
+        predecessor_tid = root_tid
+        predecessor = self.physical_version(root_tid)
+        if predecessor is None:
+            return 0, 0
+        current_tid = predecessor.next_tid
+        while current_tid is not None:
+            current = self.physical_version(current_tid)
+            if current is None:
+                raise CorruptPage("tuple version chain points to a dead slot")
+            if current_tid in removable:
+                predecessor = TupleVersion(
+                    predecessor.xmin,
+                    predecessor.xmax,
+                    current.next_tid,
+                    predecessor.values,
+                )
+                self._set_version(
+                    predecessor_tid,
+                    predecessor,
+                    transaction=transaction,
+                )
+                reclaimed += self.reclaim_version(current_tid, transaction)
+                removed += 1
+                current_tid = current.next_tid
+                continue
+            predecessor_tid = current_tid
+            predecessor = current
+            current_tid = current.next_tid
+        return removed, reclaimed
+
     def root_tid(self, tid: TID) -> TID:
         """Return the oldest physical member of the chain containing ``tid``."""
 

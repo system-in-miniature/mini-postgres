@@ -475,11 +475,13 @@ class Database:
                         statuses=context.statuses,
                     )
                 )
+                self._statistics.mark_stale(table.table_id)
         combined = VacuumResult(
             sum(result.pages_scanned for result in results),
             sum(result.dead_versions_removed for result in results),
             sum(result.index_entries_removed for result in results),
             sum(result.reclaimed_bytes for result in results),
+            sum(result.hot_versions_pruned for result in results),
         )
         return QueryResult(
             command_tag=f"VACUUM {combined.dead_versions_removed}",

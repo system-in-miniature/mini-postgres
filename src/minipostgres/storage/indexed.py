@@ -264,7 +264,55 @@ class IndexedTableAccess:
         removed_versions = 0
         removed_indexes = 0
         reclaimed_bytes = 0
+        hot_pruned = 0
+        continuations = {
+            version.next_tid
+            for _, version in versions
+            if version.next_tid is not None
+        }
+        processed: set[TID] = set()
+        for root_tid, root_version in versions:
+            if root_tid in continuations or root_version.next_tid is None:
+                continue
+            root_indexed = any(
+                root_tid in binding.tree.search(binding.key(root_version.values))
+                for binding in self._indexes
+            )
+            successor = heap.physical_version(root_version.next_tid)
+            successor_indexed = successor is not None and any(
+                root_version.next_tid
+                in binding.tree.search(binding.key(successor.values))
+                for binding in self._indexes
+            )
+            if not root_indexed or successor_indexed:
+                continue
+            chain = heap.version_chain(root_tid)
+            processed.update(tid for tid, _ in chain)
+            removable = {
+                tid
+                for tid, version in chain[1:]
+                if classify_version(
+                    version,
+                    horizon=horizon,
+                    statuses=statuses,
+                )
+                is VersionDisposition.DEAD
+            }
+            # Preserve the newest physical member unless the whole indexed
+            # row can be removed by the ordinary path.
+            if chain:
+                removable.discard(chain[-1][0])
+            pruned, reclaimed = heap.prune_chain(
+                root_tid,
+                removable,
+                transaction,
+            )
+            hot_pruned += pruned
+            removed_versions += pruned
+            reclaimed_bytes += reclaimed
         for tid, version in versions:
+            if tid in processed:
+                continue
             # An indexed root must remain until chain pruning can retarget the
             # entry atomically. A normal update has independently indexed its
             # successor and is therefore safe to unlink.
@@ -297,6 +345,7 @@ class IndexedTableAccess:
             removed_versions,
             removed_indexes,
             reclaimed_bytes,
+            hot_pruned,
         )
 
     def _keys(

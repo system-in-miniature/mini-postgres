@@ -11,3 +11,4 @@ class VacuumResult:
     dead_versions_removed: int
     index_entries_removed: int
     reclaimed_bytes: int
+    hot_versions_pruned: int = 0
