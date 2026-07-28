@@ -5,13 +5,16 @@ from __future__ import annotations
 from minipostgres.executor.base import ExecutionContext, Executor
 from minipostgres.executor.operators import (
     AggregateExecutor,
+    DeleteExecutor,
     FilterExecutor,
     HashJoinExecutor,
+    InsertExecutor,
     LimitExecutor,
     NestedLoopJoinExecutor,
     ProjectExecutor,
     SeqScanExecutor,
     SortExecutor,
+    UpdateExecutor,
     ValuesExecutor,
 )
 from minipostgres.planner.physical import (
@@ -19,6 +22,7 @@ from minipostgres.planner.physical import (
     PhysicalFilter,
     PhysicalHashJoin,
     PhysicalLimit,
+    PhysicalModifyTable,
     PhysicalNestedLoopJoin,
     PhysicalPlan,
     PhysicalProject,
@@ -73,4 +77,23 @@ def build_executor(
         )
     if isinstance(plan, PhysicalLimit):
         return LimitExecutor(build_executor(plan.child, context), plan.limit)
+    if isinstance(plan, PhysicalModifyTable):
+        child = build_executor(plan.child, context)
+        if plan.operation == "INSERT":
+            return InsertExecutor(
+                child,
+                plan.table,
+                plan.target_columns,
+                context,
+            )
+        if plan.operation == "UPDATE":
+            return UpdateExecutor(
+                child,
+                plan.table,
+                plan.assignments,
+                context,
+            )
+        if plan.operation == "DELETE":
+            return DeleteExecutor(child, plan.table, context)
+        raise TypeError(f"unsupported modification: {plan.operation}")
     raise TypeError(f"physical plan has no query executor: {type(plan).__name__}")

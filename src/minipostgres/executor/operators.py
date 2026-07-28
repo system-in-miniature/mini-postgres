@@ -6,14 +6,17 @@ from collections import defaultdict
 from functools import cmp_to_key
 from typing import cast
 
+from minipostgres.catalog.model import Column, TableMetadata
+from minipostgres.errors import CatalogError, ConstraintViolation
 from minipostgres.executor.base import (
     ExecutionContext,
     Executor,
     OutputSlot,
 )
 from minipostgres.executor.expressions import evaluate
-from minipostgres.row import ColumnBinding, ExecutionRow
+from minipostgres.row import TID, ColumnBinding, ExecutionRow
 from minipostgres.sql.bound import (
+    BoundAssignment,
     BoundExpr,
     BoundFunction,
     BoundOrderItem,
@@ -319,6 +322,136 @@ class LimitExecutor(UnaryExecutor):
         if row is not None:
             self._emitted += 1
         return row
+
+
+class ModificationExecutor(Executor):
+    def __init__(self, child: Executor) -> None:
+        super().__init__()
+        self.child = child
+        self._affected = 0
+        self._emitted = False
+
+    def _next(self) -> ExecutionRow | None:
+        if self._emitted:
+            return None
+        self._emitted = True
+        return ExecutionRow({}, {}, {OutputSlot(0): self._affected})
+
+    def _close(self) -> None:
+        self.child.close()
+
+
+class InsertExecutor(ModificationExecutor):
+    def __init__(
+        self,
+        child: Executor,
+        table: TableMetadata,
+        target_columns: tuple[Column, ...],
+        context: ExecutionContext,
+    ) -> None:
+        super().__init__(child)
+        self._table = table
+        self._target_columns = target_columns
+        self._context = context
+
+    def _open(self) -> None:
+        candidates: list[tuple[Scalar, ...]] = []
+        self.child.open()
+        try:
+            while (row := self.child.next()) is not None:
+                values: list[Scalar] = [None] * len(self._table.schema.columns)
+                for index, column in enumerate(self._target_columns):
+                    values[column.column_id] = row.computed[OutputSlot(index)]
+                candidates.append(self._validate(tuple(values)))
+        finally:
+            self.child.close()
+        access = self._context.table(self._table.table_id)
+        for candidate in candidates:
+            access.insert(candidate)
+        self._affected = len(candidates)
+
+    def _validate(self, values: tuple[Scalar, ...]) -> tuple[Scalar, ...]:
+        try:
+            return self._table.schema.validate_row(values)
+        except CatalogError as error:
+            raise ConstraintViolation(str(error)) from error
+
+
+class UpdateExecutor(ModificationExecutor):
+    def __init__(
+        self,
+        child: Executor,
+        table: TableMetadata,
+        assignments: tuple[BoundAssignment, ...],
+        context: ExecutionContext,
+    ) -> None:
+        super().__init__(child)
+        self._table = table
+        self._assignments = assignments
+        self._context = context
+
+    def _open(self) -> None:
+        candidates: list[tuple[TID, tuple[Scalar, ...]]] = []
+        self.child.open()
+        try:
+            while (row := self.child.next()) is not None:
+                try:
+                    tid = row.tids[self._table.table_id]
+                except KeyError as error:
+                    raise ConstraintViolation(
+                        "UPDATE input row has no source TID"
+                    ) from error
+                values = [
+                    row.cells[ColumnBinding(self._table.table_id, column.column_id)]
+                    for column in self._table.schema.columns
+                ]
+                for assignment in self._assignments:
+                    values[assignment.column.column_id] = evaluate(
+                        assignment.expression,
+                        row,
+                    )
+                try:
+                    validated = self._table.schema.validate_row(tuple(values))
+                except CatalogError as error:
+                    raise ConstraintViolation(str(error)) from error
+                candidates.append((tid, validated))
+        finally:
+            self.child.close()
+        access = self._context.table(self._table.table_id)
+        affected = 0
+        for tid, values in candidates:
+            if access.replace(tid, values) is None:
+                raise ConstraintViolation("UPDATE source tuple disappeared")
+            affected += 1
+        self._affected = affected
+
+
+class DeleteExecutor(ModificationExecutor):
+    def __init__(
+        self,
+        child: Executor,
+        table: TableMetadata,
+        context: ExecutionContext,
+    ) -> None:
+        super().__init__(child)
+        self._table = table
+        self._context = context
+
+    def _open(self) -> None:
+        tids: list[TID] = []
+        self.child.open()
+        try:
+            while (row := self.child.next()) is not None:
+                try:
+                    tids.append(row.tids[self._table.table_id])
+                except KeyError as error:
+                    raise ConstraintViolation(
+                        "DELETE input row has no source TID"
+                    ) from error
+        finally:
+            self.child.close()
+        access = self._context.table(self._table.table_id)
+        self._affected = sum(access.delete(tid) for tid in tids)
 
 
 def _drain_opened(executor: Executor) -> list[ExecutionRow]:
