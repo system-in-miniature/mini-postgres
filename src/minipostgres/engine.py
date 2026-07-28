@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from types import TracebackType
 
 from minipostgres.catalog.catalog import Catalog
@@ -13,11 +14,13 @@ from minipostgres.errors import BindError, DatabaseClosed
 from minipostgres.executor.base import ExecutionContext, OutputSlot, collect
 from minipostgres.executor.factory import build_executor
 from minipostgres.executor.memory import MemoryTable
+from minipostgres.planner.physical import PlanExplanation, explain_plan
 from minipostgres.planner.planner import Planner
 from minipostgres.sql.binder import Binder
 from minipostgres.sql.bound import (
     BoundCreateTable,
     BoundDelete,
+    BoundExplain,
     BoundInsert,
     BoundSelect,
     BoundStatement,
@@ -34,6 +37,7 @@ class QueryResult:
     columns: tuple[str, ...] = ()
     rows: tuple[tuple[Scalar, ...], ...] = ()
     command_tag: str = ""
+    plan: PlanExplanation | None = None
 
 
 class Database:
@@ -69,11 +73,33 @@ class Database:
             bound = Binder(self._catalog).bind(syntax)
             if isinstance(bound, BoundCreateTable):
                 return self._create_table(bound)
+            if isinstance(bound, BoundExplain):
+                return self._explain(bound)
             if isinstance(bound, (BoundSelect, BoundInsert, BoundUpdate, BoundDelete)):
                 return self._execute_relational(bound)
             raise BindError(
                 f"{type(syntax).__name__} is reserved for a later project phase"
             )
+
+    def _explain(self, statement: BoundExplain) -> QueryResult:
+        logical = self._planner.logical(statement.statement)
+        physical = self._planner.physical(logical)
+        if not statement.analyze:
+            return QueryResult(
+                command_tag="EXPLAIN",
+                plan=explain_plan(physical),
+            )
+        started = perf_counter()
+        rows = collect(build_executor(physical, self._context))
+        elapsed_ms = (perf_counter() - started) * 1_000
+        return QueryResult(
+            command_tag="EXPLAIN ANALYZE",
+            plan=explain_plan(
+                physical,
+                actual_rows=len(rows),
+                elapsed_ms=elapsed_ms,
+            ),
+        )
 
     def _create_table(self, statement: BoundCreateTable) -> QueryResult:
         columns = tuple(

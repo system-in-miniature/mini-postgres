@@ -57,7 +57,14 @@ class Executor(ABC):
             return
         if self._closed:
             raise RuntimeError("cannot reopen a closed executor")
-        self._open()
+        try:
+            self._open()
+        except BaseException:
+            try:
+                self._close()
+            finally:
+                self._closed = True
+            raise
         self._opened = True
 
     def next(self) -> ExecutionRow | None:

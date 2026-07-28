@@ -24,6 +24,19 @@ class PhysicalPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanExplanation:
+    """Stable, structured representation of one physical plan node."""
+
+    node_type: str
+    details: tuple[tuple[str, str], ...] = ()
+    estimated_rows: float | None = None
+    estimated_cost: float | None = None
+    actual_rows: int | None = None
+    elapsed_ms: float | None = None
+    children: tuple[PlanExplanation, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class PhysicalValues(PhysicalPlan):
     rows: tuple[tuple[BoundExpr, ...], ...]
 
@@ -94,3 +107,47 @@ class PhysicalModifyTable(PhysicalPlan):
     child: PhysicalPlan
     target_columns: tuple[Column, ...] = ()
     assignments: tuple[BoundAssignment, ...] = ()
+
+
+def explain_plan(
+    plan: PhysicalPlan,
+    *,
+    actual_rows: int | None = None,
+    elapsed_ms: float | None = None,
+) -> PlanExplanation:
+    """Describe a physical tree without relying on formatted planner text."""
+
+    node_type = type(plan).__name__.removeprefix("Physical")
+    details: list[tuple[str, str]] = []
+    children: tuple[PhysicalPlan, ...] = ()
+    if isinstance(plan, (PhysicalSeqScan, PhysicalIndexScan)):
+        details.append(("table", plan.table.metadata.name))
+    if isinstance(plan, PhysicalIndexScan):
+        details.append(("index_id", str(plan.index_id)))
+    if isinstance(plan, PhysicalLimit):
+        details.append(("limit", str(plan.limit)))
+        children = (plan.child,)
+    elif isinstance(
+        plan,
+        (PhysicalFilter, PhysicalProject, PhysicalAggregate, PhysicalSort),
+    ):
+        children = (plan.child,)
+    elif isinstance(plan, (PhysicalNestedLoopJoin, PhysicalHashJoin)):
+        children = (plan.left, plan.right)
+    elif isinstance(plan, PhysicalModifyTable):
+        details.extend(
+            (
+                ("operation", plan.operation),
+                ("table", plan.table.name),
+            )
+        )
+        children = (plan.child,)
+    return PlanExplanation(
+        node_type=node_type,
+        details=tuple(details),
+        estimated_rows=plan.estimated_rows,
+        estimated_cost=plan.estimated_cost,
+        actual_rows=actual_rows,
+        elapsed_ms=elapsed_ms,
+        children=tuple(explain_plan(child) for child in children),
+    )
