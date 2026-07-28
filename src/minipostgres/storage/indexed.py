@@ -11,6 +11,9 @@ from minipostgres.executor.memory import TableAccess
 from minipostgres.index.btree import BTree
 from minipostgres.index.key import KeyCodec
 from minipostgres.row import TID
+from minipostgres.storage.heap import HeapTable
+from minipostgres.transaction.snapshot import Snapshot
+from minipostgres.transaction.status import TransactionStatusTable
 from minipostgres.types import Scalar
 
 
@@ -71,11 +74,44 @@ class IndexedTableAccess:
             raise
         return tid
 
+    def insert_mvcc(
+        self,
+        xid: int,
+        snapshot: Snapshot,
+        statuses: TransactionStatusTable,
+        values: tuple[Scalar, ...],
+    ) -> TID:
+        heap = self._mvcc_heap()
+        validated = self.schema.validate_row(values)
+        keys = self._keys(validated)
+        self._check_unique_visible(keys, heap, snapshot, xid, statuses)
+        tid = heap.insert_version(xid, validated)
+        for binding, key in keys:
+            binding.tree.insert(key, tid)
+        return tid
+
     def fetch(self, tid: TID) -> tuple[Scalar, ...] | None:
         return self._heap.fetch(tid)
 
     def scan(self) -> Iterator[tuple[TID, tuple[Scalar, ...]]]:
         return self._heap.scan()
+
+    def fetch_mvcc(
+        self,
+        tid: TID,
+        snapshot: Snapshot,
+        xid: int,
+        statuses: TransactionStatusTable,
+    ) -> tuple[Scalar, ...] | None:
+        return self._mvcc_heap().fetch_visible(tid, snapshot, xid, statuses)
+
+    def scan_mvcc(
+        self,
+        snapshot: Snapshot,
+        xid: int,
+        statuses: TransactionStatusTable,
+    ) -> Iterator[tuple[TID, tuple[Scalar, ...]]]:
+        return self._mvcc_heap().scan_visible(snapshot, xid, statuses)
 
     def replace(
         self,
@@ -101,6 +137,38 @@ class IndexedTableAccess:
                 raise RuntimeError("published index is missing an updated heap TID")
             binding.tree.insert(new_key, replacement)
         return replacement
+
+    def replace_mvcc(
+        self,
+        tid: TID,
+        xid: int,
+        snapshot: Snapshot,
+        statuses: TransactionStatusTable,
+        values: tuple[Scalar, ...],
+    ) -> TID | None:
+        heap = self._mvcc_heap()
+        old_values = heap.fetch_visible(tid, snapshot, xid, statuses)
+        if old_values is None:
+            return None
+        validated = self.schema.validate_row(values)
+        new_keys = self._keys(validated)
+        self._check_unique_visible(
+            new_keys,
+            heap,
+            snapshot,
+            xid,
+            statuses,
+            ignored_tid=tid,
+        )
+        replacement = heap.replace_version(tid, xid, validated)
+        if replacement is None:
+            return None
+        for binding, key in new_keys:
+            binding.tree.insert(key, replacement)
+        return replacement
+
+    def delete_mvcc(self, tid: TID, xid: int) -> bool:
+        return self._mvcc_heap().delete_version(tid, xid)
 
     def delete(self, tid: TID) -> bool:
         values = self._heap.fetch(tid)
@@ -138,3 +206,29 @@ class IndexedTableAccess:
                 raise ConstraintViolation(
                     f"unique index {binding.metadata.name} rejects duplicate key"
                 )
+
+    @staticmethod
+    def _check_unique_visible(
+        keys: tuple[tuple[IndexBinding, bytes], ...],
+        heap: HeapTable,
+        snapshot: Snapshot,
+        xid: int,
+        statuses: TransactionStatusTable,
+        *,
+        ignored_tid: TID | None = None,
+    ) -> None:
+        for binding, key in keys:
+            if not binding.metadata.unique:
+                continue
+            for candidate in binding.tree.search(key):
+                if candidate == ignored_tid:
+                    continue
+                if heap.fetch_visible(candidate, snapshot, xid, statuses) is not None:
+                    raise ConstraintViolation(
+                        f"unique index {binding.metadata.name} rejects duplicate key"
+                    )
+
+    def _mvcc_heap(self) -> HeapTable:
+        if not isinstance(self._heap, HeapTable):
+            raise TypeError("MVCC requires a persistent heap")
+        return self._heap

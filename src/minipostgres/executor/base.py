@@ -8,6 +8,9 @@ from types import TracebackType
 
 from minipostgres.executor.memory import TableAccess
 from minipostgres.row import ExecutionRow
+from minipostgres.transaction.model import Transaction
+from minipostgres.transaction.snapshot import Snapshot
+from minipostgres.transaction.status import TransactionStatusTable
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +25,24 @@ class ExecutionContext:
 
     def __init__(self, tables: dict[int, TableAccess]) -> None:
         self._tables = dict(tables)
+        self.transaction: Transaction | None = None
+        self.snapshot: Snapshot | None = None
+        self.statuses: TransactionStatusTable | None = None
+
+    def configure_transaction(
+        self,
+        transaction: Transaction,
+        snapshot: Snapshot,
+        statuses: TransactionStatusTable,
+    ) -> None:
+        self.transaction = transaction
+        self.snapshot = snapshot
+        self.statuses = statuses
+
+    def clear_transaction(self) -> None:
+        self.transaction = None
+        self.snapshot = None
+        self.statuses = None
 
     def table(self, table_id: int) -> TableAccess:
         try:

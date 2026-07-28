@@ -11,8 +11,11 @@ class TransactionStatus(Enum):
 
 
 class TransactionStatusTable:
-    def __init__(self) -> None:
-        self._statuses: dict[int, TransactionStatus] = {}
+    def __init__(
+        self,
+        statuses: dict[int, TransactionStatus] | None = None,
+    ) -> None:
+        self._statuses = dict(statuses or {})
         self._lock = threading.RLock()
 
     def get(self, xid: int) -> TransactionStatus:

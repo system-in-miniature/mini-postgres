@@ -159,6 +159,32 @@ class SlottedPage:
         self._validate()
         return value
 
+    def replace(self, slot_id: int, value: bytes) -> bytes:
+        """Replace one live extent without changing its stable slot ID."""
+
+        old = self.read(slot_id)
+        slot = self._slots[slot_id]
+        if len(value) <= slot.length:
+            self._buffer[slot.offset : slot.offset + len(value)] = value
+            self._slots[slot_id] = _Slot(slot.offset, len(value), _LIVE)
+            self._validate()
+            return old
+        working = SlottedPage.from_bytes(self.page_id, self.to_bytes())
+        working._slots[slot_id] = _Slot(0, 0, _DEAD)
+        working.compact()
+        if len(value) > working.contiguous_free_bytes:
+            raise PageFull("replacement tuple does not fit on the page")
+        working._upper -= len(value)
+        working._buffer[
+            working._upper : working._upper + len(value)
+        ] = value
+        working._slots[slot_id] = _Slot(working._upper, len(value), _LIVE)
+        self._buffer = working._buffer
+        self._slots = working._slots
+        self._upper = working._upper
+        self._validate()
+        return old
+
     def compact(self) -> None:
         """Pack live tuple bytes while preserving every slot ID."""
 

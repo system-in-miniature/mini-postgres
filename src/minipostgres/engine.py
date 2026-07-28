@@ -95,7 +95,7 @@ class Database:
         self._context = ExecutionContext(dict(self._accesses))
         self._planner = Planner()
         self._instrumentation_tracker = InstrumentationTracker()
-        self._transactions = TransactionManager()
+        self._transactions = TransactionManager.open(root)
         self._lock = threading.RLock()
         self._closed = False
         self._default_session = DatabaseSession(self)
@@ -184,13 +184,18 @@ class Database:
                 transaction = self._transactions.begin(session.isolation)
             else:
                 transaction.require_usable()
-            self._transactions.statement_snapshot(transaction)
+            snapshot = self._transactions.statement_snapshot(transaction)
             if session.transaction is not None and isinstance(
                 bound,
                 (BoundCreateTable, BoundCreateIndex, BoundAnalyze),
             ):
                 transaction.mark_failed()
                 raise BindError("DDL and ANALYZE are not allowed inside a transaction")
+            self._context.configure_transaction(
+                transaction,
+                snapshot,
+                self._transactions.statuses,
+            )
             try:
                 result = self._dispatch(bound, syntax)
             except BaseException:
@@ -199,6 +204,8 @@ class Database:
                 elif transaction.state is TransactionState.ACTIVE:
                     transaction.mark_failed()
                 raise
+            finally:
+                self._context.clear_transaction()
             if implicit:
                 self._transactions.commit(transaction)
             return result

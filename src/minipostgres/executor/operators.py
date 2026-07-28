@@ -72,7 +72,18 @@ class SeqScanExecutor(Executor):
         self._iterator = None
 
     def _open(self) -> None:
-        self._iterator = self._context.table(self._table_id).scan()
+        access = self._context.table(self._table_id)
+        if isinstance(access, IndexedTableAccess) and _has_mvcc(self._context):
+            assert self._context.snapshot is not None
+            assert self._context.transaction is not None
+            assert self._context.statuses is not None
+            self._iterator = access.scan_mvcc(
+                self._context.snapshot,
+                self._context.transaction.xid,
+                self._context.statuses,
+            )
+        else:
+            self._iterator = access.scan()
 
     def _next(self) -> ExecutionRow | None:
         assert self._iterator is not None
@@ -135,7 +146,18 @@ class IndexScanExecutor(Executor):
         assert self._iterator is not None
         access = self._access()
         for _, tid in self._iterator:
-            values = access.fetch(tid)
+            if _has_mvcc(self._context):
+                assert self._context.snapshot is not None
+                assert self._context.transaction is not None
+                assert self._context.statuses is not None
+                values = access.fetch_mvcc(
+                    tid,
+                    self._context.snapshot,
+                    self._context.transaction.xid,
+                    self._context.statuses,
+                )
+            else:
+                values = access.fetch(tid)
             if values is None:
                 continue
             row = _table_row(
@@ -453,7 +475,23 @@ class InsertExecutor(ModificationExecutor):
         inserted: list[TID] = []
         try:
             for candidate in candidates:
-                inserted.append(access.insert(candidate))
+                if _has_mvcc(self._context) and isinstance(
+                    access,
+                    IndexedTableAccess,
+                ):
+                    assert self._context.transaction is not None
+                    assert self._context.snapshot is not None
+                    assert self._context.statuses is not None
+                    inserted.append(
+                        access.insert_mvcc(
+                            self._context.transaction.xid,
+                            self._context.snapshot,
+                            self._context.statuses,
+                            candidate,
+                        )
+                    )
+                else:
+                    inserted.append(access.insert(candidate))
         except BaseException:
             for tid in reversed(inserted):
                 access.delete(tid)
@@ -512,10 +550,39 @@ class UpdateExecutor(ModificationExecutor):
         applied: list[tuple[TID, tuple[Scalar, ...]]] = []
         try:
             for tid, values in candidates:
-                old_values = access.fetch(tid)
+                if _has_mvcc(self._context) and isinstance(
+                    access,
+                    IndexedTableAccess,
+                ):
+                    assert self._context.transaction is not None
+                    assert self._context.snapshot is not None
+                    assert self._context.statuses is not None
+                    old_values = access.fetch_mvcc(
+                        tid,
+                        self._context.snapshot,
+                        self._context.transaction.xid,
+                        self._context.statuses,
+                    )
+                else:
+                    old_values = access.fetch(tid)
                 if old_values is None:
                     raise ConstraintViolation("UPDATE source tuple disappeared")
-                replacement = access.replace(tid, values)
+                if _has_mvcc(self._context) and isinstance(
+                    access,
+                    IndexedTableAccess,
+                ):
+                    assert self._context.transaction is not None
+                    assert self._context.snapshot is not None
+                    assert self._context.statuses is not None
+                    replacement = access.replace_mvcc(
+                        tid,
+                        self._context.transaction.xid,
+                        self._context.snapshot,
+                        self._context.statuses,
+                        values,
+                    )
+                else:
+                    replacement = access.replace(tid, values)
                 if replacement is None:
                     raise ConstraintViolation("UPDATE source tuple disappeared")
                 applied.append((replacement, old_values))
@@ -555,7 +622,22 @@ class DeleteExecutor(ModificationExecutor):
         finally:
             self.child.close()
         access = self._context.table(self._table.table_id)
-        self._affected = sum(access.delete(tid) for tid in tids)
+        if _has_mvcc(self._context) and isinstance(access, IndexedTableAccess):
+            assert self._context.transaction is not None
+            self._affected = sum(
+                access.delete_mvcc(tid, self._context.transaction.xid)
+                for tid in tids
+            )
+        else:
+            self._affected = sum(access.delete(tid) for tid in tids)
+
+
+def _has_mvcc(context: ExecutionContext) -> bool:
+    return (
+        context.transaction is not None
+        and context.snapshot is not None
+        and context.statuses is not None
+    )
 
 
 def _drain_opened(executor: Executor) -> list[ExecutionRow]:
