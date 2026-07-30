@@ -1,8 +1,6 @@
-# Phase C Statistics and Optimizer Implementation Plan
+# Phase C Statistics and Optimizer Design and Implementation History
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
-**Goal:** Collect durable table/column statistics, transform logical plans, enumerate scan/join alternatives, choose physical plans by cost, and expose stable estimated-versus-actual evidence through EXPLAIN.
+**Historical objective:** Collect durable table/column statistics, transform logical plans, enumerate scan/join alternatives, choose physical plans by cost, and expose stable estimated-versus-actual evidence through EXPLAIN.
 
 **Architecture:** `ANALYZE` derives immutable statistics from one heap scan and atomically publishes them in a separate statistics catalog. Rule rewriting normalizes the logical tree before a cost-based optimizer chooses access paths and joins; statistics and cost never change query semantics. EXPLAIN serializes structured plan evidence, while runtime instrumentation wraps existing Volcano executors without changing their output rows.
 
@@ -34,14 +32,14 @@ tests/integration/test_optimizer_results.py
 tests/acceptance/test_phase_c.py
 ```
 
-### Task 1: Immutable statistics and atomic store
+### Milestone 1: Immutable statistics and atomic store
 
-**Files:**
-- Create: `src/minipostgres/catalog/statistics.py`
-- Create: `tests/unit/catalog/test_statistics.py`
-- Create: `tests/integration/test_statistics_restart.py`
+**Recorded file scope:**
+- Added: `src/minipostgres/catalog/statistics.py`
+- Added: `tests/unit/catalog/test_statistics.py`
+- Added: `tests/integration/test_statistics_restart.py`
 
-- [ ] **Step 1: Write failing model/restart tests**
+**Recorded activity 1 — Test intent: failing model/restart tests**
 
 ```python
 def test_statistics_store_preserves_column_distributions(tmp_path: Path) -> None:
@@ -77,52 +75,36 @@ def test_statistics_store_rejects_invalid_fractions(tmp_path: Path) -> None:
         )
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/catalog/test_statistics.py \
-  tests/integration/test_statistics_restart.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/catalog/test_statistics.py`, `tests/integration/test_statistics_restart.py`.
 
-Expected: imports fail because statistics components do not exist.
+Historical expected evidence: imports fail because statistics components do not exist.
 
-- [ ] **Step 3: Implement typed versioned statistics persistence**
+**Recorded activity 3 — Design outcome: typed versioned statistics persistence**
 
-Use frozen dataclasses and validate nonnegative counts, fractions in `[0, 1]`,
+The design used frozen dataclasses and validate nonnegative counts, fractions in `[0, 1]`,
 MCV frequency totals no greater than one, ordered histogram bounds, and scalar
 type compatibility. Store `statistics.json` with format version, sorted table
 IDs, explicit type tags, temporary-file fsync, atomic replace, and parent
 directory fsync. Missing table statistics return `None`; corrupt metadata is
 fail-closed.
 
-- [ ] **Step 4: Run statistics model tests**
+**Recorded activity 4 — Verification intent: statistics model tests**
 
-```bash
-uv run pytest -q tests/unit/catalog/test_statistics.py \
-  tests/integration/test_statistics_restart.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/catalog/test_statistics.py`, `tests/integration/test_statistics_restart.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 2: ANALYZE collection
 
-```bash
-git add src/minipostgres/catalog/statistics.py tests/unit/catalog \
-  tests/integration/test_statistics_restart.py
-git commit -m "feat: persist planner statistics"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/maintenance/analyze.py`
+- Changed: `src/minipostgres/engine.py`
+- Added: `tests/contract/test_analyze.py`
+- Added: `tests/property/test_histogram.py`
 
-### Task 2: ANALYZE collection
-
-**Files:**
-- Create: `src/minipostgres/maintenance/analyze.py`
-- Modify: `src/minipostgres/engine.py`
-- Create: `tests/contract/test_analyze.py`
-- Create: `tests/property/test_histogram.py`
-
-- [ ] **Step 1: Write failing collection tests**
+**Recorded activity 1 — Test intent: failing collection tests**
 
 ```python
 def test_analyze_collects_null_distinct_mcv_and_histogram(engine) -> None:
@@ -147,15 +129,13 @@ def test_equi_depth_histogram_is_ordered_and_bounded(values) -> None:
     assert len(bounds) <= 11
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/contract/test_analyze.py tests/property/test_histogram.py
-```
+Historical verification covered targeted or full test coverage, including `tests/contract/test_analyze.py`, `tests/property/test_histogram.py`.
 
-Expected: ANALYZE is parsed/bound but not executed.
+Historical expected evidence: ANALYZE is parsed/bound but not executed.
 
-- [ ] **Step 3: Implement exact MiniPostgres ANALYZE**
+**Recorded activity 3 — Design outcome: exact MiniPostgres ANALYZE**
 
 For the educational data scale, scan every visible Phase C row rather than
 sampling. Compute row/page counts, null counts, exact hashable distinct counts,
@@ -164,32 +144,20 @@ to ten equi-depth buckets from remaining orderable non-null values. Tables or
 columns with no values receive empty extrema/histograms. Publish one complete
 table statistic atomically after the scan.
 
-- [ ] **Step 4: Run ANALYZE tests**
+**Recorded activity 4 — Verification intent: ANALYZE tests**
 
-```bash
-uv run pytest -q tests/contract/test_analyze.py tests/property/test_histogram.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/contract/test_analyze.py`, `tests/property/test_histogram.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 3: Predicate selectivity
 
-```bash
-git add src/minipostgres/maintenance src/minipostgres/engine.py \
-  tests/contract/test_analyze.py tests/property/test_histogram.py
-git commit -m "feat: analyze table distributions"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/planner/selectivity.py`
+- Added: `tests/unit/planner/test_selectivity.py`
+- Added: `tests/property/test_selectivity_bounds.py`
 
-### Task 3: Predicate selectivity
-
-**Files:**
-- Create: `src/minipostgres/planner/selectivity.py`
-- Create: `tests/unit/planner/test_selectivity.py`
-- Create: `tests/property/test_selectivity_bounds.py`
-
-- [ ] **Step 1: Write failing selectivity tests**
+**Recorded activity 1 — Test intent: failing selectivity tests**
 
 ```python
 def test_equality_uses_mcv_then_distinct_fallback(stats) -> None:
@@ -213,16 +181,13 @@ def test_every_selectivity_is_a_probability(predicate) -> None:
     assert 0.0 <= estimate <= 1.0
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/planner/test_selectivity.py \
-  tests/property/test_selectivity_bounds.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/planner/test_selectivity.py`, `tests/property/test_selectivity_bounds.py`.
 
-Expected: imports fail because the estimator does not exist.
+Historical expected evidence: imports fail because the estimator does not exist.
 
-- [ ] **Step 3: Implement bounded estimation rules**
+**Recorded activity 3 — Design outcome: bounded estimation rules**
 
 Rules:
 
@@ -240,32 +205,19 @@ unknown predicate shape    → 0.333
 Clamp every result to `[0, 1]`. Missing table/column statistics use documented
 defaults and never raise during planning.
 
-- [ ] **Step 4: Run selectivity tests**
+**Recorded activity 4 — Verification intent: selectivity tests**
 
-```bash
-uv run pytest -q tests/unit/planner/test_selectivity.py \
-  tests/property/test_selectivity_bounds.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/planner/test_selectivity.py`, `tests/property/test_selectivity_bounds.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 4: Cost model
 
-```bash
-git add src/minipostgres/planner/selectivity.py tests/unit/planner \
-  tests/property/test_selectivity_bounds.py
-git commit -m "feat: estimate predicate selectivity"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/planner/cost.py`
+- Added: `tests/unit/planner/test_cost.py`
 
-### Task 4: Cost model
-
-**Files:**
-- Create: `src/minipostgres/planner/cost.py`
-- Create: `tests/unit/planner/test_cost.py`
-
-- [ ] **Step 1: Write failing monotonic cost tests**
+**Recorded activity 1 — Test intent: failing monotonic cost tests**
 
 ```python
 def test_scan_costs_are_monotonic_and_index_pays_heap_fetches() -> None:
@@ -282,15 +234,13 @@ def test_hash_join_builds_smaller_side_and_sort_is_n_log_n() -> None:
     assert model.sort(10_000) > 10 * model.sort(100)
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/planner/test_cost.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/planner/test_cost.py`.
 
-Expected: import fails because `CostModel` does not exist.
+Historical expected evidence: import fails because `CostModel` does not exist.
 
-- [ ] **Step 3: Implement explicit educational costs**
+**Recorded activity 3 — Design outcome: explicit educational costs**
 
 Freeze named constants:
 
@@ -301,37 +251,26 @@ CPU_TUPLE_COST = 0.01
 CPU_OPERATOR_COST = 0.0025
 ```
 
-Return immutable `Cost(startup, total)` values. Implement sequential scan,
+The interface returned immutable `Cost(startup, total)` values. Implement sequential scan,
 index descent plus heap fetch, filter, projection, nested loop, hash join,
 aggregate, sort, and limit formulas. Reject negative inputs. Keep units
 relative; do not claim milliseconds.
 
-- [ ] **Step 4: Run cost tests**
+**Recorded activity 4 — Verification intent: cost tests**
 
-```bash
-uv run pytest -q tests/unit/planner/test_cost.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/planner/test_cost.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 5: Logical rewrite rules
 
-```bash
-git add src/minipostgres/planner/cost.py tests/unit/planner/test_cost.py
-git commit -m "feat: cost physical query operators"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/planner/rules.py`
+- Added: `tests/unit/planner/test_constant_folding.py`
+- Added: `tests/unit/planner/test_filter_pushdown.py`
+- Added: `tests/unit/planner/test_projection_pruning.py`
 
-### Task 5: Logical rewrite rules
-
-**Files:**
-- Create: `src/minipostgres/planner/rules.py`
-- Create: `tests/unit/planner/test_constant_folding.py`
-- Create: `tests/unit/planner/test_filter_pushdown.py`
-- Create: `tests/unit/planner/test_projection_pruning.py`
-
-- [ ] **Step 1: Write failing rewrite-shape and semantic tests**
+**Recorded activity 1 — Test intent: failing rewrite-shape and semantic tests**
 
 ```python
 def test_constant_folding_preserves_sql_null_logic() -> None:
@@ -355,17 +294,13 @@ def test_projection_prunes_unneeded_scan_columns(bound_query) -> None:
     assert scan.required_column_ids == frozenset({0, 2})
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/planner/test_constant_folding.py \
-  tests/unit/planner/test_filter_pushdown.py \
-  tests/unit/planner/test_projection_pruning.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/planner/test_constant_folding.py`, `tests/unit/planner/test_filter_pushdown.py`, `tests/unit/planner/test_projection_pruning.py`.
 
-Expected: imports fail because rewrite rules do not exist.
+Historical expected evidence: imports fail because rewrite rules do not exist.
 
-- [ ] **Step 3: Implement bottom-up fixed-point rewrites**
+**Recorded activity 3 — Design outcome: bottom-up fixed-point rewrites**
 
 Rules:
 
@@ -380,36 +315,23 @@ Rules:
 Apply rules bottom-up until one pass makes no structural change, with a hard
 limit of eight passes that raises an internal invariant error if exceeded.
 
-- [ ] **Step 4: Run rule tests**
+**Recorded activity 4 — Verification intent: rule tests**
 
-```bash
-uv run pytest -q tests/unit/planner/test_constant_folding.py \
-  tests/unit/planner/test_filter_pushdown.py \
-  tests/unit/planner/test_projection_pruning.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/planner/test_constant_folding.py`, `tests/unit/planner/test_filter_pushdown.py`, `tests/unit/planner/test_projection_pruning.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 6: Sequential versus index access paths
 
-```bash
-git add src/minipostgres/planner/rules.py tests/unit/planner
-git commit -m "feat: rewrite logical query plans"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/planner/optimizer.py`
+- Changed: `src/minipostgres/planner/physical.py`
+- Changed: `src/minipostgres/executor/factory.py`
+- Changed: `src/minipostgres/executor/operators.py`
+- Added: `tests/unit/planner/test_scan_choice.py`
+- Added: `tests/integration/test_index_scan_results.py`
 
-### Task 6: Sequential versus index access paths
-
-**Files:**
-- Create: `src/minipostgres/planner/optimizer.py`
-- Modify: `src/minipostgres/planner/physical.py`
-- Modify: `src/minipostgres/executor/factory.py`
-- Modify: `src/minipostgres/executor/operators.py`
-- Create: `tests/unit/planner/test_scan_choice.py`
-- Create: `tests/integration/test_index_scan_results.py`
-
-- [ ] **Step 1: Write failing access-path tests**
+**Recorded activity 1 — Test intent: failing access-path tests**
 
 ```python
 def test_sparse_equality_chooses_index_and_dense_range_chooses_seqscan(
@@ -428,16 +350,13 @@ def test_index_scan_rechecks_heap_predicate_and_visibility(engine) -> None:
     ).rows == tuple((value,) for value in range(10, 20))
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/planner/test_scan_choice.py \
-  tests/integration/test_index_scan_results.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/planner/test_scan_choice.py`, `tests/integration/test_index_scan_results.py`.
 
-Expected: all scans remain sequential.
+Historical expected evidence: all scans remain sequential.
 
-- [ ] **Step 3: Enumerate scan alternatives and execute index candidates**
+**Recorded activity 3 — Enumerate scan alternatives and execute index candidates**
 
 For each scan, enumerate sequential access and matching B+Tree equality/range
 access for a predicate prefix. Estimate matching rows and heap pages, preserve
@@ -448,34 +367,20 @@ tie-breaking that favors sequential scan.
 applies visibility (Phase C system tuples are visible), evaluates the complete
 predicate again, and skips stale/missing candidates.
 
-- [ ] **Step 4: Run scan tests**
+**Recorded activity 4 — Verification intent: scan tests**
 
-```bash
-uv run pytest -q tests/unit/planner/test_scan_choice.py \
-  tests/integration/test_index_scan_results.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/planner/test_scan_choice.py`, `tests/integration/test_index_scan_results.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 7: Join algorithm choice
 
-```bash
-git add src/minipostgres/planner src/minipostgres/executor \
-  tests/unit/planner/test_scan_choice.py \
-  tests/integration/test_index_scan_results.py
-git commit -m "feat: choose and execute index scans"
-```
+**Recorded file scope:**
+- Changed: `src/minipostgres/planner/optimizer.py`
+- Added: `tests/unit/planner/test_join_choice.py`
+- Added: `tests/integration/test_join_algorithm_results.py`
 
-### Task 7: Join algorithm choice
-
-**Files:**
-- Modify: `src/minipostgres/planner/optimizer.py`
-- Create: `tests/unit/planner/test_join_choice.py`
-- Create: `tests/integration/test_join_algorithm_results.py`
-
-- [ ] **Step 1: Write failing algorithm-choice tests**
+**Recorded activity 1 — Test intent: failing algorithm-choice tests**
 
 ```python
 def test_equi_join_prefers_hash_for_large_inputs(analyzed_join_catalog) -> None:
@@ -490,16 +395,13 @@ def test_small_or_nonequality_join_uses_nested_loop(analyzed_join_catalog) -> No
     assert contains_node(range_join, PhysicalNestedLoopJoin)
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/planner/test_join_choice.py \
-  tests/integration/test_join_algorithm_results.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/planner/test_join_choice.py`, `tests/integration/test_join_algorithm_results.py`.
 
-Expected: baseline lowering ignores costs.
+Historical expected evidence: baseline lowering ignores costs.
 
-- [ ] **Step 3: Cost join alternatives**
+**Recorded activity 3 — Cost join alternatives**
 
 Estimate join cardinality from equality distinct counts when available and use
 the documented default otherwise. Enumerate nested-loop for every inner join
@@ -507,34 +409,21 @@ and hash join only when at least one cross-side equality key exists. Hash join
 keeps non-key conjuncts as residual predicates and builds the estimated
 smaller side. Deterministic ties choose nested-loop for easier streaming.
 
-- [ ] **Step 4: Run join-choice tests**
+**Recorded activity 4 — Verification intent: join-choice tests**
 
-```bash
-uv run pytest -q tests/unit/planner/test_join_choice.py \
-  tests/integration/test_join_algorithm_results.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/planner/test_join_choice.py`, `tests/integration/test_join_algorithm_results.py`.
 
-Expected: all commands pass and both algorithms return identical rows.
+Historical expected evidence: all commands pass and both algorithms return identical rows.
 
-- [ ] **Step 5: Commit**
+### Milestone 8: Dynamic-programming join order
 
-```bash
-git add src/minipostgres/planner/optimizer.py tests/unit/planner \
-  tests/integration/test_join_algorithm_results.py
-git commit -m "feat: choose joins by estimated cost"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/planner/memo.py`
+- Changed: `src/minipostgres/planner/optimizer.py`
+- Added: `tests/unit/planner/test_join_order.py`
+- Added: `tests/property/test_join_order_equivalence.py`
 
-### Task 8: Dynamic-programming join order
-
-**Files:**
-- Create: `src/minipostgres/planner/memo.py`
-- Modify: `src/minipostgres/planner/optimizer.py`
-- Create: `tests/unit/planner/test_join_order.py`
-- Create: `tests/property/test_join_order_equivalence.py`
-
-- [ ] **Step 1: Write failing memo/order tests**
+**Recorded activity 1 — Test intent: failing memo/order tests**
 
 ```python
 def test_dp_joins_selective_relations_before_fact_table(star_schema_stats) -> None:
@@ -551,16 +440,13 @@ def test_five_relations_preserve_source_order(five_table_query) -> None:
 Property tests execute original and reordered inner-join plans over small
 generated tables and compare result multisets.
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/planner/test_join_order.py \
-  tests/property/test_join_order_equivalence.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/planner/test_join_order.py`, `tests/property/test_join_order_equivalence.py`.
 
-Expected: joins preserve parser order for every relation count.
+Historical expected evidence: joins preserve parser order for every relation count.
 
-- [ ] **Step 3: Implement bounded subset DP**
+**Recorded activity 3 — Design outcome: bounded subset DP**
 
 For two through four base relations, memoize the cheapest connected physical
 alternative for every relation-ID frozenset. Combine disjoint subsets only
@@ -569,36 +455,23 @@ lowest node containing all referenced relations. Compare total cost, then a
 stable tuple of relation IDs and node kinds. For one or more than four
 relations, use source order.
 
-- [ ] **Step 4: Run join-order tests**
+**Recorded activity 4 — Verification intent: join-order tests**
 
-```bash
-uv run pytest -q tests/unit/planner/test_join_order.py \
-  tests/property/test_join_order_equivalence.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/planner/test_join_order.py`, `tests/property/test_join_order_equivalence.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 9: Structured EXPLAIN ANALYZE instrumentation
 
-```bash
-git add src/minipostgres/planner tests/unit/planner \
-  tests/property/test_join_order_equivalence.py
-git commit -m "feat: reorder bounded inner joins"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/planner/explain.py`
+- Added: `src/minipostgres/executor/instrumentation.py`
+- Changed: `src/minipostgres/executor/factory.py`
+- Changed: `src/minipostgres/engine.py`
+- Added: `tests/contract/test_explain_analyze.py`
+- Added: `tests/integration/test_instrumentation_cleanup.py`
 
-### Task 9: Structured EXPLAIN ANALYZE instrumentation
-
-**Files:**
-- Create: `src/minipostgres/planner/explain.py`
-- Create: `src/minipostgres/executor/instrumentation.py`
-- Modify: `src/minipostgres/executor/factory.py`
-- Modify: `src/minipostgres/engine.py`
-- Create: `tests/contract/test_explain_analyze.py`
-- Create: `tests/integration/test_instrumentation_cleanup.py`
-
-- [ ] **Step 1: Write failing estimated/actual evidence tests**
+**Recorded activity 1 — Test intent: failing estimated/actual evidence tests**
 
 ```python
 def test_explain_analyze_reports_each_node_without_changing_rows(engine) -> None:
@@ -621,16 +494,13 @@ def test_failed_execution_closes_every_instrumented_node(engine) -> None:
     assert tracker.open_count == tracker.close_count
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/contract/test_explain_analyze.py \
-  tests/integration/test_instrumentation_cleanup.py
-```
+Historical verification covered targeted or full test coverage, including `tests/contract/test_explain_analyze.py`, `tests/integration/test_instrumentation_cleanup.py`.
 
-Expected: plans lack complete estimate/actual fields.
+Historical expected evidence: plans lack complete estimate/actual fields.
 
-- [ ] **Step 3: Wrap executor lifecycle with metrics**
+**Recorded activity 3 — Wrap executor lifecycle with metrics**
 
 Define:
 
@@ -652,37 +522,23 @@ Metrics never affect row production. `EXPLAIN` does not execute;
 `EXPLAIN ANALYZE` returns original rows plus the measured tree. Formatted text
 is a view over this structure and is not a test contract.
 
-- [ ] **Step 4: Run explain tests**
+**Recorded activity 4 — Verification intent: explain tests**
 
-```bash
-uv run pytest -q tests/contract/test_explain_analyze.py \
-  tests/integration/test_instrumentation_cleanup.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/contract/test_explain_analyze.py`, `tests/integration/test_instrumentation_cleanup.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 10: Optimizer semantic differential and acceptance
 
-```bash
-git add src/minipostgres/planner/explain.py \
-  src/minipostgres/executor/instrumentation.py \
-  src/minipostgres/executor/factory.py src/minipostgres/engine.py tests
-git commit -m "feat: compare estimated and actual plan work"
-```
+**Recorded file scope:**
+- Changed: `README.md`
+- Changed: `ARCHITECTURE.md`
+- Changed: `BEHAVIORAL_CONTRACT.md`
+- Changed: `DIFFERENCES_FROM_POSTGRESQL.md`
+- Added: `tests/integration/test_optimizer_results.py`
+- Added: `tests/acceptance/test_phase_c.py`
 
-### Task 10: Optimizer semantic differential and acceptance
-
-**Files:**
-- Modify: `README.md`
-- Modify: `ARCHITECTURE.md`
-- Modify: `BEHAVIORAL_CONTRACT.md`
-- Modify: `DIFFERENCES_FROM_POSTGRESQL.md`
-- Create: `tests/integration/test_optimizer_results.py`
-- Create: `tests/acceptance/test_phase_c.py`
-
-- [ ] **Step 1: Write failing semantic and acceptance checks**
+**Recorded activity 1 — Test intent: failing semantic and acceptance checks**
 
 ```python
 @given(generated_query_and_tables(max_tables=4))
@@ -701,43 +557,27 @@ def test_phase_c_demonstrates_scan_join_and_bad_estimate_crossovers(engine) -> N
     assert evidence["after_analyze"].estimate_error_ratio < 2
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/integration/test_optimizer_results.py \
-  tests/acceptance/test_phase_c.py
-```
+Historical verification covered targeted or full test coverage, including `tests/integration/test_optimizer_results.py`, `tests/acceptance/test_phase_c.py`.
 
-Expected: matrix helpers or expected choices are incomplete.
+Historical expected evidence: matrix helpers or expected choices are incomplete.
 
-- [ ] **Step 3: Complete optimizer documentation and evidence matrix**
+**Recorded activity 3 — Complete optimizer documentation and evidence matrix**
 
-Document exact statistics, defaults, selectivity formulas, relative cost
+Historical documentation covered exact statistics, defaults, selectivity formulas, relative cost
 constants, scan/join choices, four-relation DP bound, deterministic
 tie-breaking, structured EXPLAIN fields, stale-statistics failure mode, and
 all deliberate differences from PostgreSQL. Add each behavior and direct test
 to `BEHAVIORAL_CONTRACT.md`.
 
-- [ ] **Step 4: Run full Phase C verification**
+**Recorded activity 4 — Verification intent: full Phase C verification**
 
-```bash
-uv sync
-uv run ruff check .
-uv run pyright src
-uv run pytest -q
-git diff --check
-```
+Historical verification covered targeted or full test coverage, static analysis, diff hygiene.
 
-Expected: all checks and tests pass.
+Historical expected evidence: all checks and tests pass.
 
-- [ ] **Step 5: Commit Phase C acceptance**
-
-```bash
-git add README.md ARCHITECTURE.md BEHAVIORAL_CONTRACT.md \
-  DIFFERENCES_FROM_POSTGRESQL.md tests/integration/test_optimizer_results.py \
-  tests/acceptance/test_phase_c.py
-git commit -m "docs: accept MiniPostgres optimizer phase"
-```
+**Recorded activity 5 — Recorded Phase C acceptance**
 
 ## Plan self-review
 
@@ -753,4 +593,3 @@ git commit -m "docs: accept MiniPostgres optimizer phase"
   evidence.
 - EXPLAIN tests assert structure and counts, not unstable formatting or time.
 - No task adds PostgreSQL protocol, concurrency, WAL, or course material.
-

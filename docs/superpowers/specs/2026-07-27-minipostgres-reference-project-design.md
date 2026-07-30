@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-27  
 **Status:** Approved by delegated design authority  
-**Repository:** `~/MiniPostgres-workspace/MiniPostgres`
+**Repository:** `.`
 
 ## 1. Product definition
 
@@ -656,7 +656,7 @@ fail-closed unless WAL contains an applicable verified page image.
 
 ## 19. Test architecture
 
-Test groups:
+Historical test coverage included groups:
 
 ```text
 tests/unit
@@ -834,4 +834,3 @@ mechanism must have source, contract, failure, and acceptance evidence.
   <https://www.postgresql.org/docs/18/storage-hot.html>
 - PostgreSQL 18, *Routine Vacuuming*:  
   <https://www.postgresql.org/docs/18/routine-vacuuming.html>
-

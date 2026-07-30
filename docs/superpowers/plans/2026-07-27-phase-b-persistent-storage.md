@@ -1,8 +1,6 @@
-# Phase B Persistent Storage Implementation Plan
+# Phase B Persistent Storage Design and Implementation History
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
-**Goal:** Replace Phase A's volatile table registry with fixed-size slotted heap pages reached through a buffer pool, then add a persistent page-based B+Tree whose entries map encoded keys to candidate TIDs.
+**Historical objective:** Replace Phase A's volatile table registry with fixed-size slotted heap pages reached through a buffer pool, then add a persistent page-based B+Tree whose entries map encoded keys to candidate TIDs.
 
 **Architecture:** Relation files are arrays of 8192-byte pages. Heap and B+Tree access methods request `PageKey` values through one buffer-pool API; page guards own pins and dirty transitions, and a Clock replacer selects only unpinned frames. Heap pages preserve stable slot IDs, while indexes remain derived state and always return candidate TIDs for heap recheck.
 
@@ -34,16 +32,16 @@ tests/integration/                        heap/index restart and engine wiring
 tests/acceptance/test_phase_b.py          persistent-storage acceptance
 ```
 
-### Task 1: Common page identity, header, and checksum
+### Milestone 1: Common page identity, header, and checksum
 
-**Files:**
-- Create: `src/minipostgres/storage/__init__.py`
-- Create: `src/minipostgres/storage/constants.py`
-- Create: `src/minipostgres/storage/identifiers.py`
-- Create: `src/minipostgres/storage/page.py`
-- Create: `tests/unit/storage/test_page_header.py`
+**Recorded file scope:**
+- Added: `src/minipostgres/storage/__init__.py`
+- Added: `src/minipostgres/storage/constants.py`
+- Added: `src/minipostgres/storage/identifiers.py`
+- Added: `src/minipostgres/storage/page.py`
+- Added: `tests/unit/storage/test_page_header.py`
 
-- [ ] **Step 1: Write failing format tests**
+**Recorded activity 1 — Test intent: failing format tests**
 
 ```python
 def test_page_round_trip_preserves_identity_lsn_and_payload() -> None:
@@ -67,17 +65,13 @@ def test_page_checksum_detects_torn_or_wrong_relation_page() -> None:
         decode_page(heap_page_key(2, 0), bytes(encoded))
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-Run:
+Historical verification covered targeted or full test coverage, including `tests/unit/storage/test_page_header.py`.
 
-```bash
-uv run pytest -q tests/unit/storage/test_page_header.py
-```
+Historical expected evidence: collection fails because storage page modules do not exist.
 
-Expected: collection fails because storage page modules do not exist.
-
-- [ ] **Step 3: Implement the frozen page envelope**
+**Recorded activity 3 — Design outcome: the frozen page envelope**
 
 Define:
 
@@ -94,36 +88,25 @@ class RelationId: fork: ForkKind; object_id: int
 class PageKey: relation: RelationId; page_id: int
 ```
 
-Use a fixed `struct.Struct` header containing magic, version, kind, object ID,
+The design used a fixed `struct.Struct` header containing magic, version, kind, object ID,
 page ID, page LSN, lower, upper, special, and CRC32. Encode zero-filled pages
 and calculate CRC with the checksum field zeroed. Decode validates exact size,
 identity, bounds, kind, version, and checksum.
 
-- [ ] **Step 4: Run page tests and checks**
+**Recorded activity 4 — Verification intent: page tests and checks**
 
-```bash
-uv run pytest -q tests/unit/storage/test_page_header.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/storage/test_page_header.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 2: Stable slotted-page body
 
-```bash
-git add src/minipostgres/storage tests/unit/storage/test_page_header.py
-git commit -m "feat: define checksummed storage pages"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/storage/slotted.py`
+- Added: `tests/unit/storage/test_slotted_page.py`
+- Added: `tests/property/test_slotted_page_model.py`
 
-### Task 2: Stable slotted-page body
-
-**Files:**
-- Create: `src/minipostgres/storage/slotted.py`
-- Create: `tests/unit/storage/test_slotted_page.py`
-- Create: `tests/property/test_slotted_page_model.py`
-
-- [ ] **Step 1: Write failing stable-slot tests**
+**Recorded activity 1 — Test intent: failing stable-slot tests**
 
 ```python
 def test_compaction_moves_bytes_without_renumbering_live_slots() -> None:
@@ -151,16 +134,13 @@ def test_slotted_page_matches_stable_slot_reference(values) -> None:
     assert {slot: page.read(slot) for slot in page.live_slots()} == model
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/storage/test_slotted_page.py \
-  tests/property/test_slotted_page_model.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/storage/test_slotted_page.py`, `tests/property/test_slotted_page_model.py`.
 
-Expected: imports fail because `SlottedPage` does not exist.
+Historical expected evidence: imports fail because `SlottedPage` does not exist.
 
-- [ ] **Step 3: Implement stable slots and compaction**
+**Recorded activity 3 — Design outcome: stable slots and compaction**
 
 Slots are fixed-size `(offset, length, flags)` entries growing from `lower`.
 Tuple extents grow backward from `upper`. Deletion marks a slot dead without
@@ -174,33 +154,20 @@ all live extents are in body bounds
 all live extents are disjoint
 ```
 
-- [ ] **Step 4: Run slotted-page tests**
+**Recorded activity 4 — Verification intent: slotted-page tests**
 
-```bash
-uv run pytest -q tests/unit/storage/test_slotted_page.py \
-  tests/property/test_slotted_page_model.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/storage/test_slotted_page.py`, `tests/property/test_slotted_page_model.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 3: Typed tuple and version codec
 
-```bash
-git add src/minipostgres/storage/slotted.py tests/unit/storage \
-  tests/property/test_slotted_page_model.py
-git commit -m "feat: store tuples in stable page slots"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/storage/tuple.py`
+- Added: `tests/unit/storage/test_tuple_codec.py`
+- Added: `tests/property/test_tuple_codec.py`
 
-### Task 3: Typed tuple and version codec
-
-**Files:**
-- Create: `src/minipostgres/storage/tuple.py`
-- Create: `tests/unit/storage/test_tuple_codec.py`
-- Create: `tests/property/test_tuple_codec.py`
-
-- [ ] **Step 1: Write failing tuple round-trip tests**
+**Recorded activity 1 — Test intent: failing tuple round-trip tests**
 
 ```python
 def test_tuple_codec_preserves_nulls_unicode_and_version_header() -> None:
@@ -222,16 +189,13 @@ def test_tuple_codec_rejects_wrong_schema_and_truncated_payload() -> None:
         TupleCodec(users_schema).decode(encoded[:-1])
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/storage/test_tuple_codec.py \
-  tests/property/test_tuple_codec.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/storage/test_tuple_codec.py`, `tests/property/test_tuple_codec.py`.
 
-Expected: imports fail because tuple codec does not exist.
+Historical expected evidence: imports fail because tuple codec does not exist.
 
-- [ ] **Step 3: Implement tuple versions and length-delimited values**
+**Recorded activity 3 — Design outcome: tuple versions and length-delimited values**
 
 Define:
 
@@ -251,33 +215,20 @@ TEXT. Decode validates lengths, UTF-8, bool bytes, column count, and exact
 payload consumption. Reject encoded tuples larger than the maximum slotted
 page payload with `RowTooLarge`.
 
-- [ ] **Step 4: Run tuple tests**
+**Recorded activity 4 — Verification intent: tuple tests**
 
-```bash
-uv run pytest -q tests/unit/storage/test_tuple_codec.py \
-  tests/property/test_tuple_codec.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/storage/test_tuple_codec.py`, `tests/property/test_tuple_codec.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 4: Relation-file disk manager
 
-```bash
-git add src/minipostgres/storage/tuple.py tests/unit/storage/test_tuple_codec.py \
-  tests/property/test_tuple_codec.py
-git commit -m "feat: encode typed tuple versions"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/storage/disk.py`
+- Added: `tests/unit/storage/test_disk_manager.py`
+- Added: `tests/integration/test_disk_restart.py`
 
-### Task 4: Relation-file disk manager
-
-**Files:**
-- Create: `src/minipostgres/storage/disk.py`
-- Create: `tests/unit/storage/test_disk_manager.py`
-- Create: `tests/integration/test_disk_restart.py`
-
-- [ ] **Step 1: Write failing fixed-page I/O tests**
+**Recorded activity 1 — Test intent: failing fixed-page I/O tests**
 
 ```python
 def test_disk_manager_allocates_reads_and_reopens_pages(tmp_path: Path) -> None:
@@ -297,16 +248,13 @@ def test_disk_manager_rejects_short_relation_files(tmp_path: Path) -> None:
         DiskManager.open(tmp_path).page_count(heap_relation(1))
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/storage/test_disk_manager.py \
-  tests/integration/test_disk_restart.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/storage/test_disk_manager.py`, `tests/integration/test_disk_restart.py`.
 
-Expected: imports fail because `DiskManager` does not exist.
+Historical expected evidence: imports fail because `DiskManager` does not exist.
 
-- [ ] **Step 3: Implement relation files**
+**Recorded activity 3 — Design outcome: relation files**
 
 Store heap files under `relations/table-<id>.heap` and B+Tree files under
 `indexes/index-<id>.btree`. Use `os.open`, `os.pread`, and `os.pwrite`; reject
@@ -314,32 +262,19 @@ short reads/writes. Page allocation appends one checksummed empty page and
 returns its `PageKey`. Relation sync calls `fsync`; first creation also fsyncs
 the parent directory. Close is idempotent.
 
-- [ ] **Step 4: Run disk tests**
+**Recorded activity 4 — Verification intent: disk tests**
 
-```bash
-uv run pytest -q tests/unit/storage/test_disk_manager.py \
-  tests/integration/test_disk_restart.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/storage/test_disk_manager.py`, `tests/integration/test_disk_restart.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 5: Clock replacer
 
-```bash
-git add src/minipostgres/storage/disk.py tests/unit/storage/test_disk_manager.py \
-  tests/integration/test_disk_restart.py
-git commit -m "feat: persist fixed relation pages"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/storage/replacer.py`
+- Added: `tests/unit/storage/test_clock_replacer.py`
 
-### Task 5: Clock replacer
-
-**Files:**
-- Create: `src/minipostgres/storage/replacer.py`
-- Create: `tests/unit/storage/test_clock_replacer.py`
-
-- [ ] **Step 1: Write failing deterministic replacement tests**
+**Recorded activity 1 — Test intent: failing deterministic replacement tests**
 
 ```python
 def test_clock_skips_pinned_and_gives_referenced_frame_second_chance() -> None:
@@ -357,48 +292,34 @@ def test_clock_returns_none_when_every_frame_is_pinned() -> None:
     assert clock.evict() is None
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/storage/test_clock_replacer.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/storage/test_clock_replacer.py`.
 
-Expected: import fails because `ClockReplacer` does not exist.
+Historical expected evidence: import fails because `ClockReplacer` does not exist.
 
-- [ ] **Step 3: Implement Clock state**
+**Recorded activity 3 — Design outcome: Clock state**
 
 Maintain one reference bit, one evictable bit, and a circular hand per frame.
 `record_access` sets reference. `mark_evictable` changes eligibility.
 `evict` scans at most two complete cycles, clears one reference bit as a
 second chance, and returns the first unreferenced evictable frame.
 
-- [ ] **Step 4: Run replacer tests**
+**Recorded activity 4 — Verification intent: replacer tests**
 
-```bash
-uv run pytest -q tests/unit/storage/test_clock_replacer.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/storage/test_clock_replacer.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 6: Buffer pool and page guards
 
-```bash
-git add src/minipostgres/storage/replacer.py \
-  tests/unit/storage/test_clock_replacer.py
-git commit -m "feat: select unpinned frames with Clock"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/storage/buffer.py`
+- Added: `tests/unit/storage/test_buffer_pool.py`
+- Added: `tests/unit/storage/test_page_guard.py`
+- Added: `tests/integration/test_buffer_eviction.py`
 
-### Task 6: Buffer pool and page guards
-
-**Files:**
-- Create: `src/minipostgres/storage/buffer.py`
-- Create: `tests/unit/storage/test_buffer_pool.py`
-- Create: `tests/unit/storage/test_page_guard.py`
-- Create: `tests/integration/test_buffer_eviction.py`
-
-- [ ] **Step 1: Write failing pin, dirty, and eviction tests**
+**Recorded activity 1 — Test intent: failing pin, dirty, and eviction tests**
 
 ```python
 def test_page_guard_unpins_and_records_dirty_lsn(buffer_pool, heap_key) -> None:
@@ -421,16 +342,13 @@ def test_dirty_eviction_flushes_wal_before_page(
     assert disk.writes[0].key == first_key
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/storage/test_buffer_pool.py \
-  tests/unit/storage/test_page_guard.py tests/integration/test_buffer_eviction.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/storage/test_buffer_pool.py`, `tests/unit/storage/test_page_guard.py`, `tests/integration/test_buffer_eviction.py`.
 
-Expected: imports fail because buffer components do not exist.
+Historical expected evidence: imports fail because buffer components do not exist.
 
-- [ ] **Step 3: Implement frames, pool, and guards**
+**Recorded activity 3 — Design outcome: frames, pool, and guards**
 
 `BufferPool` owns fixed frames, a `PageKey → frame_id` table, free frames,
 Clock, and a lock. `fetch_page` pins an existing frame or selects a free/
@@ -442,35 +360,22 @@ mark dirty only with a nondecreasing LSN and unpins exactly once. Pool flush
 calls `wal_flush_gate(page_lsn)` before `DiskManager.write_page`. Until Phase D,
 the default gate records no WAL and accepts only LSN zero.
 
-- [ ] **Step 4: Run buffer tests**
+**Recorded activity 4 — Verification intent: buffer tests**
 
-```bash
-uv run pytest -q tests/unit/storage/test_buffer_pool.py \
-  tests/unit/storage/test_page_guard.py tests/integration/test_buffer_eviction.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/storage/test_buffer_pool.py`, `tests/unit/storage/test_page_guard.py`, `tests/integration/test_buffer_eviction.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 7: Heap file and approximate free-space map
 
-```bash
-git add src/minipostgres/storage/buffer.py tests/unit/storage \
-  tests/integration/test_buffer_eviction.py
-git commit -m "feat: mediate pages through a buffer pool"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/storage/free_space.py`
+- Added: `src/minipostgres/storage/heap.py`
+- Added: `tests/unit/storage/test_free_space.py`
+- Added: `tests/integration/test_heap_table.py`
+- Added: `tests/property/test_heap_table_model.py`
 
-### Task 7: Heap file and approximate free-space map
-
-**Files:**
-- Create: `src/minipostgres/storage/free_space.py`
-- Create: `src/minipostgres/storage/heap.py`
-- Create: `tests/unit/storage/test_free_space.py`
-- Create: `tests/integration/test_heap_table.py`
-- Create: `tests/property/test_heap_table_model.py`
-
-- [ ] **Step 1: Write failing persistent TableAccess tests**
+**Recorded activity 1 — Test intent: failing persistent TableAccess tests**
 
 ```python
 def test_heap_insert_fetch_scan_update_delete_and_restart(storage, users_meta) -> None:
@@ -493,16 +398,13 @@ def test_heap_repairs_stale_free_space_estimate(storage, users_meta) -> None:
     assert heap.fetch(tid) == large_but_valid_row
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/storage/test_free_space.py \
-  tests/integration/test_heap_table.py tests/property/test_heap_table_model.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/storage/test_free_space.py`, `tests/integration/test_heap_table.py`, `tests/property/test_heap_table_model.py`.
 
-Expected: imports fail because heap components do not exist.
+Historical expected evidence: imports fail because heap components do not exist.
 
-- [ ] **Step 3: Implement heap access through the pool**
+**Recorded activity 3 — Design outcome: heap access through the pool**
 
 The free-space map stores one byte category per page and persists as an
 atomically replaced sidecar. Heap insertion tries candidate pages in category
@@ -513,34 +415,21 @@ allocates a page. Phase B tuple versions use `xmin=SYSTEM_XID`, `xmax=0`.
 does not own version chains until Phase D. `scan` visits page and live slot
 order. Every method uses page guards and returns/accepts the common `TID`.
 
-- [ ] **Step 4: Run heap tests**
+**Recorded activity 4 — Verification intent: heap tests**
 
-```bash
-uv run pytest -q tests/unit/storage tests/integration/test_heap_table.py \
-  tests/property/test_heap_table_model.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/storage`, `tests/integration/test_heap_table.py`, `tests/property/test_heap_table_model.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 8: Typed index-key codec
 
-```bash
-git add src/minipostgres/storage/free_space.py \
-  src/minipostgres/storage/heap.py tests
-git commit -m "feat: store rows in persistent heap files"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/index/__init__.py`
+- Added: `src/minipostgres/index/key.py`
+- Added: `tests/unit/index/test_key_codec.py`
+- Added: `tests/property/test_key_order.py`
 
-### Task 8: Typed index-key codec
-
-**Files:**
-- Create: `src/minipostgres/index/__init__.py`
-- Create: `src/minipostgres/index/key.py`
-- Create: `tests/unit/index/test_key_codec.py`
-- Create: `tests/property/test_key_order.py`
-
-- [ ] **Step 1: Write failing key-order tests**
+**Recorded activity 1 — Test intent: failing key-order tests**
 
 ```python
 def test_key_codec_preserves_scalar_and_composite_order() -> None:
@@ -555,16 +444,13 @@ def test_unique_index_rejects_null_key_in_frozen_scope() -> None:
         codec.encode((None,))
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/index/test_key_codec.py \
-  tests/property/test_key_order.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/index/test_key_codec.py`, `tests/property/test_key_order.py`.
 
-Expected: imports fail because index key modules do not exist.
+Historical expected evidence: imports fail because index key modules do not exist.
 
-- [ ] **Step 3: Implement order-preserving keys**
+**Recorded activity 3 — Design outcome: order-preserving keys**
 
 Encode signed INT64 by flipping its sign bit in big-endian representation,
 FLOAT64 with the standard sign-aware sortable transform, BOOLEAN as one byte,
@@ -572,34 +458,22 @@ and TEXT as escaped UTF-8 terminated by `0x00 0x00`. Prefix each composite
 component with a type tag. The frozen index subset rejects NULL keys rather
 than reproducing PostgreSQL's null uniqueness options.
 
-- [ ] **Step 4: Run key tests**
+**Recorded activity 4 — Verification intent: key tests**
 
-```bash
-uv run pytest -q tests/unit/index/test_key_codec.py \
-  tests/property/test_key_order.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/index/test_key_codec.py`, `tests/property/test_key_order.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 9: B+Tree page formats and search/insert
 
-```bash
-git add src/minipostgres/index tests/unit/index tests/property/test_key_order.py
-git commit -m "feat: encode ordered BTree keys"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/index/pages.py`
+- Added: `src/minipostgres/index/btree.py`
+- Added: `tests/unit/index/test_btree_pages.py`
+- Added: `tests/unit/index/test_btree_insert.py`
+- Added: `tests/property/test_btree_multimap.py`
 
-### Task 9: B+Tree page formats and search/insert
-
-**Files:**
-- Create: `src/minipostgres/index/pages.py`
-- Create: `src/minipostgres/index/btree.py`
-- Create: `tests/unit/index/test_btree_pages.py`
-- Create: `tests/unit/index/test_btree_insert.py`
-- Create: `tests/property/test_btree_multimap.py`
-
-- [ ] **Step 1: Write failing split and multimap tests**
+**Recorded activity 1 — Test intent: failing split and multimap tests**
 
 ```python
 def test_btree_root_and_leaf_split_preserve_search(tmp_tree) -> None:
@@ -624,16 +498,13 @@ def test_btree_matches_sorted_multimap(entries, tree) -> None:
     ]
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/index/test_btree_pages.py \
-  tests/unit/index/test_btree_insert.py tests/property/test_btree_multimap.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/index/test_btree_pages.py`, `tests/unit/index/test_btree_insert.py`, `tests/property/test_btree_multimap.py`.
 
-Expected: imports fail because tree pages and BTree do not exist.
+Historical expected evidence: imports fail because tree pages and BTree do not exist.
 
-- [ ] **Step 3: Implement metapage, internal, leaf, and recursive split**
+**Recorded activity 3 — Design outcome: metapage, internal, leaf, and recursive split**
 
 The metapage stores root page ID and height. Internal pages store sorted
 separator keys with child page IDs. Leaves store sorted `(key, TID)` pairs and
@@ -643,35 +514,22 @@ Search descends with binary search. Insert latches one path, inserts in leaf,
 splits at byte-balanced boundaries, propagates one separator upward, and
 creates a new root when required. All I/O uses page guards.
 
-- [ ] **Step 4: Run insertion tests**
+**Recorded activity 4 — Verification intent: insertion tests**
 
-```bash
-uv run pytest -q tests/unit/index/test_btree_pages.py \
-  tests/unit/index/test_btree_insert.py tests/property/test_btree_multimap.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/index/test_btree_pages.py`, `tests/unit/index/test_btree_insert.py`, `tests/property/test_btree_multimap.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 10: B+Tree deletion, rebalance, and range iteration
 
-```bash
-git add src/minipostgres/index tests/unit/index \
-  tests/property/test_btree_multimap.py
-git commit -m "feat: insert and split persistent BTree pages"
-```
+**Recorded file scope:**
+- Changed: `src/minipostgres/index/btree.py`
+- Added: `src/minipostgres/index/iterator.py`
+- Added: `tests/unit/index/test_btree_delete.py`
+- Added: `tests/unit/index/test_btree_range.py`
+- Added: `tests/integration/test_btree_restart.py`
 
-### Task 10: B+Tree deletion, rebalance, and range iteration
-
-**Files:**
-- Modify: `src/minipostgres/index/btree.py`
-- Create: `src/minipostgres/index/iterator.py`
-- Create: `tests/unit/index/test_btree_delete.py`
-- Create: `tests/unit/index/test_btree_range.py`
-- Create: `tests/integration/test_btree_restart.py`
-
-- [ ] **Step 1: Write failing delete/merge/range tests**
+**Recorded activity 1 — Test intent: failing delete/merge/range tests**
 
 ```python
 def test_delete_redistributes_merges_and_collapses_root(tree) -> None:
@@ -694,18 +552,15 @@ def test_range_iterator_crosses_leaf_siblings_and_restarts(tree_path) -> None:
     ) == expected
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/index/test_btree_delete.py \
-  tests/unit/index/test_btree_range.py tests/integration/test_btree_restart.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/index/test_btree_delete.py`, `tests/unit/index/test_btree_range.py`, `tests/integration/test_btree_restart.py`.
 
-Expected: deletion/range assertions fail because operations are absent.
+Historical expected evidence: deletion/range assertions fail because operations are absent.
 
-- [ ] **Step 3: Implement removal and sibling-backed iteration**
+**Recorded activity 3 — Design outcome: removal and sibling-backed iteration**
 
-Delete one exact `(key, TID)`. Underflow first borrows from a sibling with
+The design deleted one exact `(key, TID)`. Underflow first borrows from a sibling with
 surplus entries, otherwise merges and removes the parent separator recursively.
 Collapse an internal root with one child. Empty root remains an empty leaf.
 
@@ -713,37 +568,24 @@ Range iteration seeks the lower bound once and follows right-sibling IDs until
 the inclusive upper bound is exceeded. The iterator pins only its current leaf
 and releases it on advance or close.
 
-- [ ] **Step 4: Run complete tree tests**
+**Recorded activity 4 — Verification intent: complete tree tests**
 
-```bash
-uv run pytest -q tests/unit/index tests/property/test_btree_multimap.py \
-  tests/integration/test_btree_restart.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/index`, `tests/property/test_btree_multimap.py`, `tests/integration/test_btree_restart.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 11: Catalog index publication and persistent engine wiring
 
-```bash
-git add src/minipostgres/index tests/unit/index \
-  tests/integration/test_btree_restart.py
-git commit -m "feat: rebalance and iterate BTree ranges"
-```
+**Recorded file scope:**
+- Changed: `src/minipostgres/catalog/catalog.py`
+- Changed: `src/minipostgres/engine.py`
+- Changed: `src/minipostgres/executor/factory.py`
+- Changed: `src/minipostgres/executor/operators.py`
+- Added: `tests/integration/test_engine_heap_restart.py`
+- Added: `tests/integration/test_create_index.py`
+- Added: `tests/contract/test_unique_index.py`
 
-### Task 11: Catalog index publication and persistent engine wiring
-
-**Files:**
-- Modify: `src/minipostgres/catalog/catalog.py`
-- Modify: `src/minipostgres/engine.py`
-- Modify: `src/minipostgres/executor/factory.py`
-- Modify: `src/minipostgres/executor/operators.py`
-- Create: `tests/integration/test_engine_heap_restart.py`
-- Create: `tests/integration/test_create_index.py`
-- Create: `tests/contract/test_unique_index.py`
-
-- [ ] **Step 1: Write failing engine persistence/index tests**
+**Recorded activity 1 — Test intent: failing engine persistence/index tests**
 
 ```python
 def test_committed_phase_b_rows_survive_clean_restart(tmp_path: Path) -> None:
@@ -764,16 +606,13 @@ def test_create_unique_index_builds_existing_rows_before_publication(engine) -> 
     assert engine.catalog.index("users_id").unique
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/integration/test_engine_heap_restart.py \
-  tests/integration/test_create_index.py tests/contract/test_unique_index.py
-```
+Historical verification covered targeted or full test coverage, including `tests/integration/test_engine_heap_restart.py`, `tests/integration/test_create_index.py`, `tests/contract/test_unique_index.py`.
 
-Expected: rows disappear on restart and index statements are not executed.
+Historical expected evidence: rows disappear on restart and index statements are not executed.
 
-- [ ] **Step 3: Wire HeapTable and transactional index publication**
+**Recorded activity 3 — Wire HeapTable and transactional index publication**
 
 Database startup builds one `HeapTable` per catalog table and one `BTree` per
 published index. `CREATE TABLE` creates/fsyncs the empty heap before catalog
@@ -786,34 +625,22 @@ Phase B serializes each statement under the engine write latch, so unique
 check plus heap/index change is atomic inside the process. Phase D replaces
 this with key locks and MVCC-aware checks.
 
-- [ ] **Step 4: Run engine persistence tests**
+**Recorded activity 4 — Verification intent: engine persistence tests**
 
-```bash
-uv run pytest -q tests/integration/test_engine_heap_restart.py \
-  tests/integration/test_create_index.py tests/contract/test_unique_index.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/integration/test_engine_heap_restart.py`, `tests/integration/test_create_index.py`, `tests/contract/test_unique_index.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 12: Phase B acceptance and documentation
 
-```bash
-git add src/minipostgres tests/integration tests/contract/test_unique_index.py
-git commit -m "feat: persist tables and publish BTree indexes"
-```
+**Recorded file scope:**
+- Changed: `README.md`
+- Changed: `ARCHITECTURE.md`
+- Changed: `BEHAVIORAL_CONTRACT.md`
+- Changed: `DIFFERENCES_FROM_POSTGRESQL.md`
+- Added: `tests/acceptance/test_phase_b.py`
 
-### Task 12: Phase B acceptance and documentation
-
-**Files:**
-- Modify: `README.md`
-- Modify: `ARCHITECTURE.md`
-- Modify: `BEHAVIORAL_CONTRACT.md`
-- Modify: `DIFFERENCES_FROM_POSTGRESQL.md`
-- Create: `tests/acceptance/test_phase_b.py`
-
-- [ ] **Step 1: Write failing storage acceptance**
+**Recorded activity 1 — Test intent: failing storage acceptance**
 
 ```python
 def test_phase_b_storage_acceptance(tmp_path: Path) -> None:
@@ -831,40 +658,26 @@ def test_executor_has_no_direct_disk_or_collection_bypass() -> None:
     assert ".read_page(" not in executor_sources
 ```
 
-- [ ] **Step 2: Run acceptance and verify RED**
+**Recorded activity 2 — Verification intent: acceptance and verify RED**
 
-```bash
-uv run pytest -q tests/acceptance/test_phase_b.py
-```
+Historical verification covered targeted or full test coverage, including `tests/acceptance/test_phase_b.py`.
 
-Expected: fails until acceptance helpers and documentation are complete.
+Historical expected evidence: fails until acceptance helpers and documentation are complete.
 
-- [ ] **Step 3: Document the physical-storage contract**
+**Recorded activity 3 — Document the physical-storage contract**
 
-Document 8 KiB pages, stable slots/TIDs, tuple size limit, page checksum and
+Historical documentation covered 8 KiB pages, stable slots/TIDs, tuple size limit, page checksum and
 LSN reservation, buffer pin/dirty rules, Clock, heap/FSM behavior, B+Tree
 candidate semantics, statement-serialized uniqueness, clean restart, and the
 deliberate absence of WAL/MVCC in Phase B.
 
-- [ ] **Step 4: Run full Phase B verification**
+**Recorded activity 4 — Verification intent: full Phase B verification**
 
-```bash
-uv sync
-uv run ruff check .
-uv run pyright src
-uv run pytest -q
-git diff --check
-```
+Historical verification covered targeted or full test coverage, static analysis, diff hygiene.
 
-Expected: all static checks and tests pass; diff check is silent.
+Historical expected evidence: all static checks and tests pass; diff check is silent.
 
-- [ ] **Step 5: Commit Phase B acceptance**
-
-```bash
-git add README.md ARCHITECTURE.md BEHAVIORAL_CONTRACT.md \
-  DIFFERENCES_FROM_POSTGRESQL.md tests/acceptance/test_phase_b.py
-git commit -m "docs: accept MiniPostgres persistent storage phase"
-```
+**Recorded activity 5 — Recorded Phase B acceptance**
 
 ## Plan self-review
 

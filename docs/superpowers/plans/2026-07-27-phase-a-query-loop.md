@@ -1,8 +1,6 @@
-# Phase A Query Loop Implementation Plan
+# Phase A Query Loop Design and Implementation History
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
-**Goal:** Build a typed, in-process SQL query loop over a retained `MemoryTable` access method, including catalog, parsing, binding, plans, Volcano execution, joins, aggregates, modification statements, and structured EXPLAIN.
+**Historical objective:** Build a typed, in-process SQL query loop over a retained `MemoryTable` access method, including catalog, parsing, binding, plans, Volcano execution, joins, aggregates, modification statements, and structured EXPLAIN.
 
 **Architecture:** SQL text becomes syntax-only AST, then catalog-aware bound plans, then immutable logical and physical nodes executed through a demand-pull interface. The executor depends on `TableAccess`, not Python collections; `MemoryTable` is the first access-method implementation and remains a differential reference when disk heap arrives.
 
@@ -41,18 +39,18 @@ tests/integration/                     multi-operator query loops and catalog re
 tests/property/                        expression and query model properties
 ```
 
-### Task 1: Package, errors, types, and rows
+### Milestone 1: Package, errors, types, and rows
 
-**Files:**
-- Create: `pyproject.toml`
-- Create: `src/minipostgres/__init__.py`
-- Create: `src/minipostgres/errors.py`
-- Create: `src/minipostgres/types.py`
-- Create: `src/minipostgres/row.py`
-- Create: `tests/unit/test_types.py`
-- Create: `tests/unit/test_rows.py`
+**Recorded file scope:**
+- Added: `pyproject.toml`
+- Added: `src/minipostgres/__init__.py`
+- Added: `src/minipostgres/errors.py`
+- Added: `src/minipostgres/types.py`
+- Added: `src/minipostgres/row.py`
+- Added: `tests/unit/test_types.py`
+- Added: `tests/unit/test_rows.py`
 
-- [ ] **Step 1: Write failing scalar and row tests**
+**Recorded activity 1 — Test intent: failing scalar and row tests**
 
 ```python
 def test_sql_boolean_truth_tables_and_null_comparison() -> None:
@@ -71,18 +69,14 @@ def test_execution_row_merges_cells_and_tids() -> None:
     assert merged.tids == {1: TID(0, 2), 2: TID(0, 5)}
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-Run:
+Historical verification covered targeted or full test coverage, including `tests/unit/test_types.py`, `tests/unit/test_rows.py`.
 
-```bash
-uv run pytest -q tests/unit/test_types.py tests/unit/test_rows.py
-```
-
-Expected: collection fails because `minipostgres.types` and
+Historical expected evidence: collection fails because `minipostgres.types` and
 `minipostgres.row` do not exist.
 
-- [ ] **Step 3: Implement the package primitives**
+**Recorded activity 3 — Design outcome: the package primitives**
 
 Define:
 
@@ -112,39 +106,26 @@ class ExecutionRow:
     computed: dict[object, Scalar] = field(default_factory=dict)
 ```
 
-Implement strict scalar validation, int64 overflow checks, the sole
+The recorded implementation provided strict scalar validation, int64 overflow checks, the sole
 `INT64 → FLOAT64` widening, SQL boolean operators, null-propagating arithmetic
 and comparison, and typed errors from the accepted design.
 
-- [ ] **Step 4: Run primitive tests and static checks**
+**Recorded activity 4 — Verification intent: primitive tests and static checks**
 
-Run:
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/test_types.py`, `tests/unit/test_rows.py`.
 
-```bash
-uv run pytest -q tests/unit/test_types.py tests/unit/test_rows.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical expected evidence: all commands pass.
 
-Expected: all commands pass.
+### Milestone 2: Durable catalog
 
-- [ ] **Step 5: Commit**
+**Recorded file scope:**
+- Added: `src/minipostgres/catalog/__init__.py`
+- Added: `src/minipostgres/catalog/model.py`
+- Added: `src/minipostgres/catalog/catalog.py`
+- Added: `tests/unit/catalog/test_model.py`
+- Added: `tests/integration/test_catalog_restart.py`
 
-```bash
-git add pyproject.toml src tests/unit
-git commit -m "feat: add MiniPostgres value primitives"
-```
-
-### Task 2: Durable catalog
-
-**Files:**
-- Create: `src/minipostgres/catalog/__init__.py`
-- Create: `src/minipostgres/catalog/model.py`
-- Create: `src/minipostgres/catalog/catalog.py`
-- Create: `tests/unit/catalog/test_model.py`
-- Create: `tests/integration/test_catalog_restart.py`
-
-- [ ] **Step 1: Write failing catalog tests**
+**Recorded activity 1 — Test intent: failing catalog tests**
 
 ```python
 def test_catalog_assigns_stable_ids_and_survives_restart(tmp_path: Path) -> None:
@@ -168,17 +149,13 @@ def test_catalog_rejects_duplicate_names_case_insensitively(tmp_path: Path) -> N
         catalog.create_table("users", (Column("other", DataType.INT64),))
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-Run:
+Historical verification covered targeted or full test coverage, including `tests/unit/catalog`, `tests/integration/test_catalog_restart.py`.
 
-```bash
-uv run pytest -q tests/unit/catalog tests/integration/test_catalog_restart.py
-```
+Historical expected evidence: collection fails because catalog modules do not exist.
 
-Expected: collection fails because catalog modules do not exist.
-
-- [ ] **Step 3: Implement immutable metadata and atomic persistence**
+**Recorded activity 3 — Design outcome: immutable metadata and atomic persistence**
 
 Define immutable `Column`, `Schema`, `TableMetadata`, and `IndexMetadata`
 dataclasses. `Catalog.open(path)` reads `catalog.json` or starts with
@@ -189,35 +166,22 @@ fsync the directory.
 Names are normalized with `casefold`. Metadata retains the original display
 name. Table and column lookups accept stable numeric IDs.
 
-- [ ] **Step 4: Run catalog tests**
+**Recorded activity 4 — Verification intent: catalog tests**
 
-Run:
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/catalog`, `tests/integration/test_catalog_restart.py`.
 
-```bash
-uv run pytest -q tests/unit/catalog tests/integration/test_catalog_restart.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical expected evidence: all commands pass.
 
-Expected: all commands pass.
+### Milestone 3: Lexer
 
-- [ ] **Step 5: Commit**
+**Recorded file scope:**
+- Added: `src/minipostgres/sql/__init__.py`
+- Added: `src/minipostgres/sql/tokens.py`
+- Added: `src/minipostgres/sql/lexer.py`
+- Added: `tests/unit/sql/test_lexer.py`
+- Added: `tests/property/test_lexer_literals.py`
 
-```bash
-git add src/minipostgres/catalog tests/unit/catalog tests/integration/test_catalog_restart.py
-git commit -m "feat: persist typed catalog metadata"
-```
-
-### Task 3: Lexer
-
-**Files:**
-- Create: `src/minipostgres/sql/__init__.py`
-- Create: `src/minipostgres/sql/tokens.py`
-- Create: `src/minipostgres/sql/lexer.py`
-- Create: `tests/unit/sql/test_lexer.py`
-- Create: `tests/property/test_lexer_literals.py`
-
-- [ ] **Step 1: Write failing lexer examples and properties**
+**Recorded activity 1 — Test intent: failing lexer examples and properties**
 
 ```python
 def test_lexer_handles_keywords_identifiers_numbers_and_sql_strings() -> None:
@@ -237,51 +201,35 @@ def test_quoted_string_round_trips(value: str) -> None:
     assert lex(f"'{escaped}'")[0].value == value
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-Run:
+Historical verification covered targeted or full test coverage, including `tests/unit/sql/test_lexer.py`, `tests/property/test_lexer_literals.py`.
 
-```bash
-uv run pytest -q tests/unit/sql/test_lexer.py tests/property/test_lexer_literals.py
-```
+Historical expected evidence: collection fails because lexer modules do not exist.
 
-Expected: collection fails because lexer modules do not exist.
+**Recorded activity 3 — Design outcome: a bounded lexer**
 
-- [ ] **Step 3: Implement a bounded lexer**
-
-Create position-aware tokens for identifiers, frozen keywords, integers,
+The recorded scope added position-aware tokens for identifiers, frozen keywords, integers,
 floats, strings, punctuation, arithmetic, comparison operators, and EOF.
 Reject NUL, unterminated strings, malformed numeric literals, and unknown
 characters with `SqlSyntaxError(line, column, message)`.
 
-- [ ] **Step 4: Run lexer tests and checks**
+**Recorded activity 4 — Verification intent: lexer tests and checks**
 
-Run:
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/sql/test_lexer.py`, `tests/property/test_lexer_literals.py`.
 
-```bash
-uv run pytest -q tests/unit/sql/test_lexer.py tests/property/test_lexer_literals.py
-uv run ruff check src tests
-```
+Historical expected evidence: all commands pass.
 
-Expected: all commands pass.
+### Milestone 4: AST and recursive-descent parser
 
-- [ ] **Step 5: Commit**
+**Recorded file scope:**
+- Added: `src/minipostgres/sql/ast.py`
+- Added: `src/minipostgres/sql/parser.py`
+- Added: `tests/unit/sql/test_parser_ddl_dml.py`
+- Added: `tests/unit/sql/test_parser_select.py`
+- Added: `tests/unit/sql/test_parser_precedence.py`
 
-```bash
-git add src/minipostgres/sql tests/unit/sql tests/property/test_lexer_literals.py
-git commit -m "feat: tokenize the frozen SQL subset"
-```
-
-### Task 4: AST and recursive-descent parser
-
-**Files:**
-- Create: `src/minipostgres/sql/ast.py`
-- Create: `src/minipostgres/sql/parser.py`
-- Create: `tests/unit/sql/test_parser_ddl_dml.py`
-- Create: `tests/unit/sql/test_parser_select.py`
-- Create: `tests/unit/sql/test_parser_precedence.py`
-
-- [ ] **Step 1: Write failing statement and precedence tests**
+**Recorded activity 1 — Test intent: failing statement and precedence tests**
 
 ```python
 def test_parse_select_join_group_order_limit() -> None:
@@ -308,20 +256,15 @@ Also cover `CREATE TABLE`, `INSERT` with multiple rows, `UPDATE`, `DELETE`,
 `EXPLAIN [ANALYZE]`, null literals, `IS [NOT] NULL`, unary operators, aliases,
 qualified stars, and a trailing semicolon.
 
-- [ ] **Step 2: Run parser tests and verify RED**
+**Recorded activity 2 — Verification intent: parser tests and verify RED**
 
-Run:
+Historical verification covered targeted or full test coverage, including `tests/unit/sql/test_parser_ddl_dml.py`, `tests/unit/sql/test_parser_select.py`, `tests/unit/sql/test_parser_precedence.py`.
 
-```bash
-uv run pytest -q tests/unit/sql/test_parser_ddl_dml.py \
-  tests/unit/sql/test_parser_select.py tests/unit/sql/test_parser_precedence.py
-```
+Historical expected evidence: collection fails because AST and parser modules do not exist.
 
-Expected: collection fails because AST and parser modules do not exist.
+**Recorded activity 3 — Design outcome: immutable AST and parser**
 
-- [ ] **Step 3: Implement immutable AST and parser**
-
-Use frozen, slotted dataclasses for statement and expression nodes. Parse
+The design used frozen, slotted dataclasses for statement and expression nodes. Parse
 expressions with:
 
 ```text
@@ -331,35 +274,22 @@ OR → AND → NOT → comparison/IS NULL → +,- → *,/ → unary → primary
 Require exactly one statement per `parse` call. Keep all AST names unresolved
 and preserve source spelling for diagnostics.
 
-- [ ] **Step 4: Run parser tests**
+**Recorded activity 4 — Verification intent: parser tests**
 
-Run:
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/sql`.
 
-```bash
-uv run pytest -q tests/unit/sql
-uv run ruff check src tests
-uv run pyright src
-```
+Historical expected evidence: all commands pass.
 
-Expected: all commands pass.
+### Milestone 5: Bound expressions and binder
 
-- [ ] **Step 5: Commit**
+**Recorded file scope:**
+- Added: `src/minipostgres/sql/bound.py`
+- Added: `src/minipostgres/sql/binder.py`
+- Added: `tests/unit/sql/test_binder_names.py`
+- Added: `tests/unit/sql/test_binder_types.py`
+- Added: `tests/unit/sql/test_binder_aggregates.py`
 
-```bash
-git add src/minipostgres/sql tests/unit/sql
-git commit -m "feat: parse the MiniPostgres SQL subset"
-```
-
-### Task 5: Bound expressions and binder
-
-**Files:**
-- Create: `src/minipostgres/sql/bound.py`
-- Create: `src/minipostgres/sql/binder.py`
-- Create: `tests/unit/sql/test_binder_names.py`
-- Create: `tests/unit/sql/test_binder_types.py`
-- Create: `tests/unit/sql/test_binder_aggregates.py`
-
-- [ ] **Step 1: Write failing binder contracts**
+**Recorded activity 1 — Test intent: failing binder contracts**
 
 ```python
 def test_binder_rejects_ambiguous_unqualified_column(catalog: Catalog) -> None:
@@ -381,20 +311,15 @@ def test_binder_requires_nonaggregate_columns_in_group_by(catalog: Catalog) -> N
         Binder(catalog).bind(parse("SELECT region, COUNT(*) FROM sales"))
 ```
 
-- [ ] **Step 2: Run binder tests and verify RED**
+**Recorded activity 2 — Verification intent: binder tests and verify RED**
 
-Run:
+Historical verification covered targeted or full test coverage, including `tests/unit/sql/test_binder_names.py`, `tests/unit/sql/test_binder_types.py`, `tests/unit/sql/test_binder_aggregates.py`.
 
-```bash
-uv run pytest -q tests/unit/sql/test_binder_names.py \
-  tests/unit/sql/test_binder_types.py tests/unit/sql/test_binder_aggregates.py
-```
+Historical expected evidence: imports fail because binder modules do not exist.
 
-Expected: imports fail because binder modules do not exist.
+**Recorded activity 3 — Design outcome: catalog-aware binding**
 
-- [ ] **Step 3: Implement catalog-aware binding**
-
-Create hashable bound-expression nodes carrying `data_type` and `nullable`.
+The recorded scope added hashable bound-expression nodes carrying `data_type` and `nullable`.
 Resolve table scopes, aliases, stable `ColumnBinding` values, stars, output
 aliases, comparison compatibility, arithmetic widening, boolean predicates,
 aggregate signatures, grouping legality, and `ORDER BY` aliases.
@@ -402,36 +327,23 @@ aggregate signatures, grouping legality, and `ORDER BY` aliases.
 Bound modification statements include target table IDs, target column IDs, and
 typed expressions. Binder never accesses table rows.
 
-- [ ] **Step 4: Run binder tests**
+**Recorded activity 4 — Verification intent: binder tests**
 
-Run:
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/sql`.
 
-```bash
-uv run pytest -q tests/unit/sql
-uv run ruff check src tests
-uv run pyright src
-```
+Historical expected evidence: all commands pass.
 
-Expected: all commands pass.
+### Milestone 6: Logical and physical plans
 
-- [ ] **Step 5: Commit**
+**Recorded file scope:**
+- Added: `src/minipostgres/planner/__init__.py`
+- Added: `src/minipostgres/planner/logical.py`
+- Added: `src/minipostgres/planner/physical.py`
+- Added: `src/minipostgres/planner/planner.py`
+- Added: `tests/unit/planner/test_logical_planner.py`
+- Added: `tests/unit/planner/test_physical_planner.py`
 
-```bash
-git add src/minipostgres/sql tests/unit/sql
-git commit -m "feat: bind SQL names and expression types"
-```
-
-### Task 6: Logical and physical plans
-
-**Files:**
-- Create: `src/minipostgres/planner/__init__.py`
-- Create: `src/minipostgres/planner/logical.py`
-- Create: `src/minipostgres/planner/physical.py`
-- Create: `src/minipostgres/planner/planner.py`
-- Create: `tests/unit/planner/test_logical_planner.py`
-- Create: `tests/unit/planner/test_physical_planner.py`
-
-- [ ] **Step 1: Write failing plan-shape tests**
+**Recorded activity 1 — Test intent: failing plan-shape tests**
 
 ```python
 def test_select_plan_orders_filter_before_projection(bound_users_query) -> None:
@@ -447,53 +359,36 @@ def test_join_defaults_to_nested_loop_in_phase_a(bound_join_query) -> None:
     assert len(joins) == 1
 ```
 
-- [ ] **Step 2: Run planner tests and verify RED**
+**Recorded activity 2 — Verification intent: planner tests and verify RED**
 
-Run:
+Historical verification covered targeted or full test coverage, including `tests/unit/planner`.
 
-```bash
-uv run pytest -q tests/unit/planner
-```
+Historical expected evidence: collection fails because planner modules do not exist.
 
-Expected: collection fails because planner modules do not exist.
-
-- [ ] **Step 3: Implement immutable plan nodes and baseline lowering**
+**Recorded activity 3 — Design outcome: immutable plan nodes and baseline lowering**
 
 Represent every logical and physical operator in the accepted design as a
 frozen dataclass. Phase A lowers scans to sequential scans, equi-joins to hash
 joins when one side is a simple equality key and to nested loops otherwise,
 and inserts aggregate/sort/limit/modify nodes in semantic order.
 
-Keep estimated cost and rows optional in Phase A, represented by `None`.
+The design retained estimated cost and rows optional in Phase A, represented by `None`.
 
-- [ ] **Step 4: Run planner tests**
+**Recorded activity 4 — Verification intent: planner tests**
 
-Run:
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/planner`, `tests/unit/sql`.
 
-```bash
-uv run pytest -q tests/unit/planner tests/unit/sql
-uv run ruff check src tests
-uv run pyright src
-```
+Historical expected evidence: all commands pass.
 
-Expected: all commands pass.
+### Milestone 7: TableAccess and retained MemoryTable
 
-- [ ] **Step 5: Commit**
+**Recorded file scope:**
+- Added: `src/minipostgres/executor/__init__.py`
+- Added: `src/minipostgres/executor/memory.py`
+- Added: `tests/unit/executor/test_memory_table.py`
+- Added: `tests/property/test_memory_table_model.py`
 
-```bash
-git add src/minipostgres/planner tests/unit/planner
-git commit -m "feat: plan bound SQL into Volcano operators"
-```
-
-### Task 7: TableAccess and retained MemoryTable
-
-**Files:**
-- Create: `src/minipostgres/executor/__init__.py`
-- Create: `src/minipostgres/executor/memory.py`
-- Create: `tests/unit/executor/test_memory_table.py`
-- Create: `tests/property/test_memory_table_model.py`
-
-- [ ] **Step 1: Write failing access-method tests**
+**Recorded activity 1 — Test intent: failing access-method tests**
 
 ```python
 def test_memory_table_uses_stable_tids_and_tombstones() -> None:
@@ -513,18 +408,13 @@ def test_scan_matches_insert_model(rows) -> None:
     assert list(table.scan()) == list(zip(tids, rows, strict=True))
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-Run:
+Historical verification covered targeted or full test coverage, including `tests/unit/executor/test_memory_table.py`, `tests/property/test_memory_table_model.py`.
 
-```bash
-uv run pytest -q tests/unit/executor/test_memory_table.py \
-  tests/property/test_memory_table_model.py
-```
+Historical expected evidence: collection fails because `MemoryTable` does not exist.
 
-Expected: collection fails because `MemoryTable` does not exist.
-
-- [ ] **Step 3: Implement the access protocol and reference table**
+**Recorded activity 3 — Design outcome: the access protocol and reference table**
 
 Define a runtime-checkable `TableAccess` protocol with:
 
@@ -540,38 +430,24 @@ delete(tid) -> bool
 slots as tombstones, validates rows against schema, and never exposes its
 internal containers.
 
-- [ ] **Step 4: Run access tests**
+**Recorded activity 4 — Verification intent: access tests**
 
-Run:
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/executor/test_memory_table.py`, `tests/property/test_memory_table_model.py`.
 
-```bash
-uv run pytest -q tests/unit/executor/test_memory_table.py \
-  tests/property/test_memory_table_model.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical expected evidence: all commands pass.
 
-Expected: all commands pass.
+### Milestone 8: Expression evaluator and core Volcano operators
 
-- [ ] **Step 5: Commit**
+**Recorded file scope:**
+- Added: `src/minipostgres/executor/base.py`
+- Added: `src/minipostgres/executor/expressions.py`
+- Added: `src/minipostgres/executor/operators.py`
+- Added: `src/minipostgres/executor/factory.py`
+- Added: `tests/unit/executor/test_expressions.py`
+- Added: `tests/unit/executor/test_query_operators.py`
+- Added: `tests/property/test_expression_model.py`
 
-```bash
-git add src/minipostgres/executor tests/unit/executor tests/property/test_memory_table_model.py
-git commit -m "feat: add the reference table access method"
-```
-
-### Task 8: Expression evaluator and core Volcano operators
-
-**Files:**
-- Create: `src/minipostgres/executor/base.py`
-- Create: `src/minipostgres/executor/expressions.py`
-- Create: `src/minipostgres/executor/operators.py`
-- Create: `src/minipostgres/executor/factory.py`
-- Create: `tests/unit/executor/test_expressions.py`
-- Create: `tests/unit/executor/test_query_operators.py`
-- Create: `tests/property/test_expression_model.py`
-
-- [ ] **Step 1: Write failing evaluator and operator tests**
+**Recorded activity 1 — Test intent: failing evaluator and operator tests**
 
 ```python
 def test_filter_drops_false_and_unknown_rows(context) -> None:
@@ -590,20 +466,15 @@ def test_hash_join_preserves_duplicate_matches(context) -> None:
 Property tests compare arithmetic, comparisons, and boolean combinations
 against a small explicit three-valued reference evaluator.
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-Run:
+Historical verification covered targeted or full test coverage, including `tests/unit/executor/test_expressions.py`, `tests/unit/executor/test_query_operators.py`, `tests/property/test_expression_model.py`.
 
-```bash
-uv run pytest -q tests/unit/executor/test_expressions.py \
-  tests/unit/executor/test_query_operators.py tests/property/test_expression_model.py
-```
+Historical expected evidence: imports fail because executor components do not exist.
 
-Expected: imports fail because executor components do not exist.
+**Recorded activity 3 — Design outcome: execution context and operators**
 
-- [ ] **Step 3: Implement execution context and operators**
-
-Implement idempotent `open`/`close`, context-managed collection, and:
+The recorded implementation provided idempotent `open`/`close`, context-managed collection, and:
 
 ```text
 ValuesExecutor
@@ -622,34 +493,21 @@ aggregation, aggregate null rules, and deterministic group encounter order.
 `SortExecutor` uses frozen binary/null ordering. The factory recursively maps
 physical nodes to executors.
 
-- [ ] **Step 4: Run executor tests**
+**Recorded activity 4 — Verification intent: executor tests**
 
-Run:
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/executor`, `tests/property/test_expression_model.py`.
 
-```bash
-uv run pytest -q tests/unit/executor tests/property/test_expression_model.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical expected evidence: all commands pass.
 
-Expected: all commands pass.
+### Milestone 9: Modification operators and constraints
 
-- [ ] **Step 5: Commit**
+**Recorded file scope:**
+- Changed: `src/minipostgres/executor/operators.py`
+- Changed: `src/minipostgres/executor/factory.py`
+- Added: `tests/unit/executor/test_modify_operators.py`
+- Added: `tests/contract/test_constraints.py`
 
-```bash
-git add src/minipostgres/executor tests/unit/executor tests/property/test_expression_model.py
-git commit -m "feat: execute relational operators with Volcano"
-```
-
-### Task 9: Modification operators and constraints
-
-**Files:**
-- Modify: `src/minipostgres/executor/operators.py`
-- Modify: `src/minipostgres/executor/factory.py`
-- Create: `tests/unit/executor/test_modify_operators.py`
-- Create: `tests/contract/test_constraints.py`
-
-- [ ] **Step 1: Write failing DML and constraint tests**
+**Recorded activity 1 — Test intent: failing DML and constraint tests**
 
 ```python
 def test_update_uses_source_tid_and_returns_affected_count(engine) -> None:
@@ -667,20 +525,15 @@ def test_not_null_is_enforced_before_access_mutation(engine) -> None:
     assert engine.execute("SELECT COUNT(*) FROM users").rows == ((0,),)
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-Run:
+Historical verification covered targeted or full test coverage, including `tests/unit/executor/test_modify_operators.py`, `tests/contract/test_constraints.py`.
 
-```bash
-uv run pytest -q tests/unit/executor/test_modify_operators.py \
-  tests/contract/test_constraints.py
-```
+Historical expected evidence: tests fail because modify executors and engine fixture are missing.
 
-Expected: tests fail because modify executors and engine fixture are missing.
+**Recorded activity 3 — Design outcome: insert, update, and delete executors**
 
-- [ ] **Step 3: Implement insert, update, and delete executors**
-
-Add `InsertExecutor`, `UpdateExecutor`, and `DeleteExecutor`. Validate complete
+The recorded scope added `InsertExecutor`, `UpdateExecutor`, and `DeleteExecutor`. Validate complete
 candidate rows before mutating `TableAccess`. Update and delete consume source
 TIDs from their child rows. Return one command-result row containing the
 affected count; the engine converts it to a command tag.
@@ -688,36 +541,23 @@ affected count; the engine converts it to a command tag.
 Phase A enforces `NOT NULL`. `PRIMARY KEY` and `UNIQUE` metadata parse and bind,
 but their indexed concurrency-safe enforcement begins with B+Tree integration.
 
-- [ ] **Step 4: Run modification tests**
+**Recorded activity 4 — Verification intent: modification tests**
 
-Run:
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/executor`, `tests/contract/test_constraints.py`.
 
-```bash
-uv run pytest -q tests/unit/executor tests/contract/test_constraints.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical expected evidence: all commands pass.
 
-Expected: all commands pass.
+### Milestone 10: Database orchestration and SQL contract
 
-- [ ] **Step 5: Commit**
+**Recorded file scope:**
+- Added: `src/minipostgres/engine.py`
+- Changed: `src/minipostgres/__init__.py`
+- Added: `tests/conftest.py`
+- Added: `tests/contract/test_database_api.py`
+- Added: `tests/integration/test_query_loop.py`
+- Added: `tests/integration/test_join_aggregate.py`
 
-```bash
-git add src/minipostgres/executor tests/unit/executor tests/contract/test_constraints.py
-git commit -m "feat: execute validated row modifications"
-```
-
-### Task 10: Database orchestration and SQL contract
-
-**Files:**
-- Create: `src/minipostgres/engine.py`
-- Modify: `src/minipostgres/__init__.py`
-- Create: `tests/conftest.py`
-- Create: `tests/contract/test_database_api.py`
-- Create: `tests/integration/test_query_loop.py`
-- Create: `tests/integration/test_join_aggregate.py`
-
-- [ ] **Step 1: Write failing public API tests**
+**Recorded activity 1 — Test intent: failing public API tests**
 
 ```python
 def test_database_executes_query_loop_across_statements(tmp_path: Path) -> None:
@@ -743,18 +583,13 @@ def test_join_group_and_aggregate_end_to_end(engine) -> None:
     assert result.rows == (("A", 2, 30), ("B", 1, 7))
 ```
 
-- [ ] **Step 2: Run integration tests and verify RED**
+**Recorded activity 2 — Verification intent: integration tests and verify RED**
 
-Run:
+Historical verification covered targeted or full test coverage, including `tests/contract/test_database_api.py`, `tests/integration/test_query_loop.py`, `tests/integration/test_join_aggregate.py`.
 
-```bash
-uv run pytest -q tests/contract/test_database_api.py \
-  tests/integration/test_query_loop.py tests/integration/test_join_aggregate.py
-```
+Historical expected evidence: imports fail because `Database` does not exist.
 
-Expected: imports fail because `Database` does not exist.
-
-- [ ] **Step 3: Implement the engine lifecycle**
+**Recorded activity 3 — Design outcome: the engine lifecycle**
 
 `Database.open(path)` owns a catalog and table-access registry. `execute`:
 
@@ -766,42 +601,29 @@ parse → bind → logical plan → physical plan → executor tree → material
 On Phase A reopen, catalog metadata survives but rows are empty by explicit
 contract. `close` is idempotent; operations after close raise `DatabaseClosed`.
 
-Return immutable:
+The interface returned immutable:
 
 ```python
 QueryResult(columns: tuple[str, ...], rows: tuple[tuple[Scalar, ...], ...],
             command_tag: str)
 ```
 
-- [ ] **Step 4: Run the SQL contract**
+**Recorded activity 4 — Verification intent: the SQL contract**
 
-Run:
+Historical verification covered targeted or full test coverage, static analysis, including `tests/contract`, `tests/integration`.
 
-```bash
-uv run pytest -q tests/contract tests/integration
-uv run ruff check src tests
-uv run pyright src
-```
+Historical expected evidence: all commands pass.
 
-Expected: all commands pass.
+### Milestone 11: Structured EXPLAIN and failure-state cleanup
 
-- [ ] **Step 5: Commit**
+**Recorded file scope:**
+- Changed: `src/minipostgres/planner/physical.py`
+- Changed: `src/minipostgres/executor/base.py`
+- Changed: `src/minipostgres/engine.py`
+- Added: `tests/contract/test_explain.py`
+- Added: `tests/integration/test_executor_cleanup.py`
 
-```bash
-git add src/minipostgres/engine.py src/minipostgres/__init__.py tests
-git commit -m "feat: close the in-process SQL query loop"
-```
-
-### Task 11: Structured EXPLAIN and failure-state cleanup
-
-**Files:**
-- Modify: `src/minipostgres/planner/physical.py`
-- Modify: `src/minipostgres/executor/base.py`
-- Modify: `src/minipostgres/engine.py`
-- Create: `tests/contract/test_explain.py`
-- Create: `tests/integration/test_executor_cleanup.py`
-
-- [ ] **Step 1: Write failing EXPLAIN and cleanup tests**
+**Recorded activity 1 — Test intent: failing EXPLAIN and cleanup tests**
 
 ```python
 def test_explain_returns_structured_plan_without_executing(engine) -> None:
@@ -819,57 +641,37 @@ def test_executor_tree_closes_after_expression_error(engine, monkeypatch) -> Non
     assert tracker.opened == tracker.closed
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-Run:
+Historical verification covered targeted or full test coverage, including `tests/contract/test_explain.py`, `tests/integration/test_executor_cleanup.py`.
 
-```bash
-uv run pytest -q tests/contract/test_explain.py \
-  tests/integration/test_executor_cleanup.py
-```
-
-Expected: tests fail because structured plan output and cleanup instrumentation
+Historical expected evidence: tests fail because structured plan output and cleanup instrumentation
 are absent.
 
-- [ ] **Step 3: Implement explain output and guaranteed closure**
+**Recorded activity 3 — Design outcome: explain output and guaranteed closure**
 
-Add immutable `PlanExplanation(node_type, details, estimated_rows,
+The recorded scope added immutable `PlanExplanation(node_type, details, estimated_rows,
 estimated_cost, actual_rows, elapsed_ms, children)`. `EXPLAIN` only plans;
 `EXPLAIN ANALYZE` measures execution with `perf_counter` and records actual row
 counts. The engine owns executor closure in `finally`.
 
-- [ ] **Step 4: Run explain and cleanup tests**
+**Recorded activity 4 — Verification intent: explain and cleanup tests**
 
-Run:
+Historical verification covered targeted or full test coverage, static analysis, including `tests/contract/test_explain.py`, `tests/integration/test_executor_cleanup.py`.
 
-```bash
-uv run pytest -q tests/contract/test_explain.py \
-  tests/integration/test_executor_cleanup.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical expected evidence: all commands pass.
 
-Expected: all commands pass.
+### Milestone 12: Phase A documentation and acceptance
 
-- [ ] **Step 5: Commit**
+**Recorded file scope:**
+- Added: `README.md`
+- Added: `SCOPE.md`
+- Added: `ARCHITECTURE.md`
+- Added: `BEHAVIORAL_CONTRACT.md`
+- Added: `DIFFERENCES_FROM_POSTGRESQL.md`
+- Added: `tests/acceptance/test_phase_a.py`
 
-```bash
-git add src/minipostgres tests/contract/test_explain.py \
-  tests/integration/test_executor_cleanup.py
-git commit -m "feat: explain plans and close failed executions"
-```
-
-### Task 12: Phase A documentation and acceptance
-
-**Files:**
-- Create: `README.md`
-- Create: `SCOPE.md`
-- Create: `ARCHITECTURE.md`
-- Create: `BEHAVIORAL_CONTRACT.md`
-- Create: `DIFFERENCES_FROM_POSTGRESQL.md`
-- Create: `tests/acceptance/test_phase_a.py`
-
-- [ ] **Step 1: Write failing documentation and acceptance checks**
+**Recorded activity 1 — Test intent: failing documentation and acceptance checks**
 
 ```python
 def test_phase_a_query_engine_acceptance(tmp_path: Path) -> None:
@@ -886,44 +688,26 @@ def test_docs_state_project_not_course_and_memory_boundary() -> None:
     assert "course is designed after the reference project" in readme
 ```
 
-- [ ] **Step 2: Run acceptance tests and verify RED**
+**Recorded activity 2 — Verification intent: acceptance tests and verify RED**
 
-Run:
+Historical verification covered targeted or full test coverage, including `tests/acceptance/test_phase_a.py`.
 
-```bash
-uv run pytest -q tests/acceptance/test_phase_a.py
-```
+Historical expected evidence: fails because acceptance helper and project documents are absent.
 
-Expected: fails because acceptance helper and project documents are absent.
+**Recorded activity 3 — Test intent: reference-project documentation**
 
-- [ ] **Step 3: Write reference-project documentation**
-
-Document the direct API, frozen SQL/type subset, query flow, TableAccess
+Historical documentation covered the direct API, frozen SQL/type subset, query flow, TableAccess
 boundary, Phase A volatility, error contracts, unsupported PostgreSQL
 features, and exact commands for installation and verification. Do not create
 course chapters or quizzes.
 
-- [ ] **Step 4: Run full Phase A verification**
+**Recorded activity 4 — Verification intent: full Phase A verification**
 
-Run:
+Historical verification covered targeted or full test coverage, static analysis, diff hygiene.
 
-```bash
-uv sync
-uv run ruff check .
-uv run pyright src
-uv run pytest -q
-git diff --check
-```
+Historical expected evidence: static checks pass, all tests pass, and diff check is silent.
 
-Expected: static checks pass, all tests pass, and diff check is silent.
-
-- [ ] **Step 5: Commit Phase A acceptance**
-
-```bash
-git add README.md SCOPE.md ARCHITECTURE.md BEHAVIORAL_CONTRACT.md \
-  DIFFERENCES_FROM_POSTGRESQL.md tests/acceptance
-git commit -m "docs: accept MiniPostgres query engine phase"
-```
+**Recorded activity 5 — Recorded Phase A acceptance**
 
 ## Plan self-review
 
@@ -938,4 +722,3 @@ git commit -m "docs: accept MiniPostgres query engine phase"
 - No task creates course material or a network adapter.
 - Every task uses test-first, explicit RED/GREEN commands, static checks, and a
   focused commit.
-

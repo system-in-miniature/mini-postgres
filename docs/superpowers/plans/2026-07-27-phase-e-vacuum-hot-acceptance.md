@@ -1,8 +1,6 @@
-# Phase E Vacuum, HOT, and Final Acceptance Implementation Plan
+# Phase E Vacuum, HOT, and Final Acceptance Design and Implementation History
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
-**Goal:** Reclaim globally dead tuple versions and stale index entries, reuse stable slots safely, implement same-page heap-only update chains, and produce requirement-by-requirement final acceptance evidence for the completed reference project.
+**Historical objective:** Reclaim globally dead tuple versions and stale index entries, reuse stable slots safely, implement same-page heap-only update chains, and produce requirement-by-requirement final acceptance evidence for the completed reference project.
 
 **Architecture:** Vacuum computes one horizon from active snapshots and classifies physical versions without changing logical visibility. Under a table maintenance lock it removes index entries before making slots reusable, compacts bytes without renumbering live slots, and repairs free-space/statistics metadata. HOT updates retain one indexed root TID and link same-page non-indexed versions; heap fetch follows and visibility-checks the chain, while Vacuum prunes only globally dead intermediates.
 
@@ -28,15 +26,15 @@ tests/differential/test_postgres18.py
 tests/acceptance/test_final_acceptance.py
 ```
 
-### Task 1: Cleanup horizon and dead-version classification
+### Milestone 1: Cleanup horizon and dead-version classification
 
-**Files:**
-- Create: `src/minipostgres/maintenance/__init__.py`
-- Create: `src/minipostgres/maintenance/horizon.py`
-- Create: `tests/unit/maintenance/test_horizon.py`
-- Create: `tests/property/test_dead_version_classifier.py`
+**Recorded file scope:**
+- Added: `src/minipostgres/maintenance/__init__.py`
+- Added: `src/minipostgres/maintenance/horizon.py`
+- Added: `tests/unit/maintenance/test_horizon.py`
+- Added: `tests/property/test_dead_version_classifier.py`
 
-- [ ] **Step 1: Write failing horizon/classification tests**
+**Recorded activity 1 — Test intent: failing horizon/classification tests**
 
 ```python
 def test_horizon_is_oldest_snapshot_or_next_xid(manager) -> None:
@@ -62,16 +60,13 @@ def test_aborted_creator_and_old_committed_delete_are_globally_dead(statuses) ->
 Property tests prove that a version classified DEAD is invisible to every
 supported snapshot whose horizon is at or above the cleanup horizon.
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/maintenance/test_horizon.py \
-  tests/property/test_dead_version_classifier.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/maintenance/test_horizon.py`, `tests/property/test_dead_version_classifier.py`.
 
-Expected: maintenance horizon components do not exist.
+Historical expected evidence: maintenance horizon components do not exist.
 
-- [ ] **Step 3: Implement conservative global classification**
+**Recorded activity 3 — Design outcome: conservative global classification**
 
 `cleanup_horizon` considers every active transaction's snapshot xmax and
 active XIDs; a transaction that has not acquired a snapshot contributes its
@@ -84,34 +79,21 @@ own XID. Classify:
 
 No XID wraparound/freeze logic is added.
 
-- [ ] **Step 4: Run horizon tests**
+**Recorded activity 4 — Verification intent: horizon tests**
 
-```bash
-uv run pytest -q tests/unit/maintenance/test_horizon.py \
-  tests/property/test_dead_version_classifier.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/maintenance/test_horizon.py`, `tests/property/test_dead_version_classifier.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 2: Table maintenance coordination
 
-```bash
-git add src/minipostgres/maintenance tests/unit/maintenance \
-  tests/property/test_dead_version_classifier.py
-git commit -m "feat: prove the Vacuum cleanup horizon"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/maintenance/coordinator.py`
+- Changed: `src/minipostgres/storage/heap.py`
+- Added: `tests/unit/maintenance/test_coordinator.py`
+- Added: `tests/concurrency/test_vacuum_writers.py`
 
-### Task 2: Table maintenance coordination
-
-**Files:**
-- Create: `src/minipostgres/maintenance/coordinator.py`
-- Modify: `src/minipostgres/storage/heap.py`
-- Create: `tests/unit/maintenance/test_coordinator.py`
-- Create: `tests/concurrency/test_vacuum_writers.py`
-
-- [ ] **Step 1: Write failing reader/writer maintenance tests**
+**Recorded activity 1 — Test intent: failing reader/writer maintenance tests**
 
 ```python
 def test_maintenance_waits_for_active_table_writer(coordinator) -> None:
@@ -133,16 +115,13 @@ def test_new_writer_waits_behind_queued_maintenance(coordinator) -> None:
     next_writer.result(timeout=1).release()
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/maintenance/test_coordinator.py \
-  tests/concurrency/test_vacuum_writers.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/maintenance/test_coordinator.py`, `tests/concurrency/test_vacuum_writers.py`.
 
-Expected: no maintenance coordination exists.
+Historical expected evidence: no maintenance coordination exists.
 
-- [ ] **Step 3: Implement fair per-table maintenance leases**
+**Recorded activity 3 — Design outcome: fair per-table maintenance leases**
 
 Normal readers require no maintenance lease because MVCC protects visibility.
 Heap/index writers acquire shared writer leases. Vacuum and index rebuild
@@ -150,36 +129,22 @@ acquire an exclusive maintenance lease. Once maintenance queues, new writers
 wait behind it to prevent starvation. Leases are context managers and release
 exactly once on every exception path.
 
-- [ ] **Step 4: Run coordination tests**
+**Recorded activity 4 — Verification intent: coordination tests**
 
-```bash
-uv run pytest -q tests/unit/maintenance/test_coordinator.py \
-  tests/concurrency/test_vacuum_writers.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/maintenance/test_coordinator.py`, `tests/concurrency/test_vacuum_writers.py`.
 
-Expected: all commands terminate and pass.
+Historical expected evidence: all commands terminate and pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 3: Vacuum index cleanup before slot reuse
 
-```bash
-git add src/minipostgres/maintenance/coordinator.py \
-  src/minipostgres/storage/heap.py tests/unit/maintenance \
-  tests/concurrency/test_vacuum_writers.py
-git commit -m "feat: coordinate table maintenance and writers"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/maintenance/vacuum.py`
+- Changed: `src/minipostgres/engine.py`
+- Added: `tests/integration/test_vacuum_reuse.py`
+- Added: `tests/integration/test_vacuum_indexes.py`
+- Added: `tests/concurrency/test_vacuum_snapshots.py`
 
-### Task 3: Vacuum index cleanup before slot reuse
-
-**Files:**
-- Create: `src/minipostgres/maintenance/vacuum.py`
-- Modify: `src/minipostgres/engine.py`
-- Create: `tests/integration/test_vacuum_reuse.py`
-- Create: `tests/integration/test_vacuum_indexes.py`
-- Create: `tests/concurrency/test_vacuum_snapshots.py`
-
-- [ ] **Step 1: Write failing reclaim/snapshot tests**
+**Recorded activity 1 — Test intent: failing reclaim/snapshot tests**
 
 ```python
 def test_vacuum_removes_index_entry_before_reusing_slot(engine) -> None:
@@ -204,17 +169,13 @@ def test_long_snapshot_prevents_old_version_reclamation(engine) -> None:
     assert second.dead_versions_removed == 1
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/integration/test_vacuum_reuse.py \
-  tests/integration/test_vacuum_indexes.py \
-  tests/concurrency/test_vacuum_snapshots.py
-```
+Historical verification covered targeted or full test coverage, including `tests/integration/test_vacuum_reuse.py`, `tests/integration/test_vacuum_indexes.py`, `tests/concurrency/test_vacuum_snapshots.py`.
 
-Expected: VACUUM is bound but not implemented.
+Historical expected evidence: VACUUM is bound but not implemented.
 
-- [ ] **Step 3: Implement ordered physical reclamation**
+**Recorded activity 3 — Design outcome: ordered physical reclamation**
 
 Under maintenance lease:
 
@@ -230,35 +191,21 @@ If index deletion fails, do not free the slot. VACUUM returns immutable counts
 for scanned pages, removed versions/index entries, compacted pages, and
 reclaimed bytes. Relation files do not shrink.
 
-- [ ] **Step 4: Run Vacuum tests**
+**Recorded activity 4 — Verification intent: Vacuum tests**
 
-```bash
-uv run pytest -q tests/integration/test_vacuum_reuse.py \
-  tests/integration/test_vacuum_indexes.py \
-  tests/concurrency/test_vacuum_snapshots.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/integration/test_vacuum_reuse.py`, `tests/integration/test_vacuum_indexes.py`, `tests/concurrency/test_vacuum_snapshots.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 4: Vacuum WAL/recovery idempotence
 
-```bash
-git add src/minipostgres/maintenance/vacuum.py src/minipostgres/engine.py \
-  tests/integration tests/concurrency/test_vacuum_snapshots.py
-git commit -m "feat: vacuum dead tuple versions"
-```
+**Recorded file scope:**
+- Changed: `src/minipostgres/maintenance/vacuum.py`
+- Changed: `src/minipostgres/wal/recovery.py`
+- Added: `tests/reliability/test_vacuum_recovery.py`
+- Added: `tests/property/test_vacuum_idempotence.py`
 
-### Task 4: Vacuum WAL/recovery idempotence
-
-**Files:**
-- Modify: `src/minipostgres/maintenance/vacuum.py`
-- Modify: `src/minipostgres/wal/recovery.py`
-- Create: `tests/reliability/test_vacuum_recovery.py`
-- Create: `tests/property/test_vacuum_idempotence.py`
-
-- [ ] **Step 1: Write failing crash/idempotence tests**
+**Recorded activity 1 — Test intent: failing crash/idempotence tests**
 
 ```python
 @pytest.mark.parametrize(
@@ -283,16 +230,13 @@ def test_vacuum_twice_has_same_physical_state_as_once(state) -> None:
     assert physical_heap_digest(twice) == physical_heap_digest(once)
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/reliability/test_vacuum_recovery.py \
-  tests/property/test_vacuum_idempotence.py
-```
+Historical verification covered targeted or full test coverage, including `tests/reliability/test_vacuum_recovery.py`, `tests/property/test_vacuum_idempotence.py`.
 
-Expected: maintenance mutations are not fully crash-tested.
+Historical expected evidence: maintenance mutations are not fully crash-tested.
 
-- [ ] **Step 3: Make each cleanup action replay-safe**
+**Recorded activity 3 — Make each cleanup action replay-safe**
 
 Exact index deletion is idempotent. Heap slot removal is one
 HEAP_PAGE_IMAGES record with a complete post-image and normal page-LSN gate.
@@ -301,36 +245,22 @@ rebuilds indexes before open. Crash after heap image cannot expose stale TID
 because recovery also rebuilds indexes. A second Vacuum sees no live/dead
 version in an already free slot.
 
-- [ ] **Step 4: Run reliability tests**
+**Recorded activity 4 — Verification intent: reliability tests**
 
-```bash
-uv run pytest -q tests/reliability/test_vacuum_recovery.py \
-  tests/property/test_vacuum_idempotence.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/reliability/test_vacuum_recovery.py`, `tests/property/test_vacuum_idempotence.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 5: HOT eligibility and same-page insertion
 
-```bash
-git add src/minipostgres/maintenance/vacuum.py \
-  src/minipostgres/wal/recovery.py tests/reliability \
-  tests/property/test_vacuum_idempotence.py
-git commit -m "feat: recover Vacuum maintenance safely"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/maintenance/hot.py`
+- Changed: `src/minipostgres/storage/heap.py`
+- Changed: `src/minipostgres/executor/operators.py`
+- Added: `tests/unit/maintenance/test_hot_eligibility.py`
+- Added: `tests/integration/test_hot_update.py`
 
-### Task 5: HOT eligibility and same-page insertion
-
-**Files:**
-- Create: `src/minipostgres/maintenance/hot.py`
-- Modify: `src/minipostgres/storage/heap.py`
-- Modify: `src/minipostgres/executor/operators.py`
-- Create: `tests/unit/maintenance/test_hot_eligibility.py`
-- Create: `tests/integration/test_hot_update.py`
-
-- [ ] **Step 1: Write failing HOT decision/update tests**
+**Recorded activity 1 — Test intent: failing HOT decision/update tests**
 
 ```python
 def test_hot_requires_unchanged_index_columns_and_same_page_space(table_meta) -> None:
@@ -356,16 +286,13 @@ def test_hot_update_keeps_one_index_entry_and_links_versions(engine) -> None:
     assert engine.execute("SELECT age FROM users WHERE id = 1").rows == ((21,),)
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/unit/maintenance/test_hot_eligibility.py \
-  tests/integration/test_hot_update.py
-```
+Historical verification covered targeted or full test coverage, including `tests/unit/maintenance/test_hot_eligibility.py`, `tests/integration/test_hot_update.py`.
 
-Expected: ordinary update adds a new index entry.
+Historical expected evidence: ordinary update adds a new index entry.
 
-- [ ] **Step 3: Implement HOT as an update optimization**
+**Recorded activity 3 — Design outcome: HOT as an update optimization**
 
 Compute changed target column IDs from bound assignments and indexed column
 IDs from catalog. Under tuple lock/page guard, pre-encode the new version and
@@ -381,34 +308,21 @@ Index candidates identify HOT roots; heap fetch follows `next_tid` with a
 visited-set and maximum chain length equal to live slots on that page, raising
 `CorruptPage` on cycles/off-page links.
 
-- [ ] **Step 4: Run HOT tests**
+**Recorded activity 4 — Verification intent: HOT tests**
 
-```bash
-uv run pytest -q tests/unit/maintenance/test_hot_eligibility.py \
-  tests/integration/test_hot_update.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/maintenance/test_hot_eligibility.py`, `tests/integration/test_hot_update.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 6: HOT chain visibility and fallback
 
-```bash
-git add src/minipostgres/maintenance/hot.py src/minipostgres/storage/heap.py \
-  src/minipostgres/executor/operators.py tests
-git commit -m "feat: update nonindexed columns with HOT"
-```
+**Recorded file scope:**
+- Changed: `src/minipostgres/storage/heap.py`
+- Added: `tests/concurrency/test_hot_visibility.py`
+- Added: `tests/integration/test_hot_fallback.py`
+- Added: `tests/property/test_hot_chain.py`
 
-### Task 6: HOT chain visibility and fallback
-
-**Files:**
-- Modify: `src/minipostgres/storage/heap.py`
-- Create: `tests/concurrency/test_hot_visibility.py`
-- Create: `tests/integration/test_hot_fallback.py`
-- Create: `tests/property/test_hot_chain.py`
-
-- [ ] **Step 1: Write failing snapshot/fallback tests**
+**Recorded activity 1 — Test intent: failing snapshot/fallback tests**
 
 ```python
 def test_hot_chain_returns_version_for_each_snapshot(engine) -> None:
@@ -431,16 +345,13 @@ def test_indexed_column_or_full_page_falls_back_to_normal_update(engine) -> None
     assert latest_version(engine, 2).page_id != root.page_id
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/concurrency/test_hot_visibility.py \
-  tests/integration/test_hot_fallback.py tests/property/test_hot_chain.py
-```
+Historical verification covered targeted or full test coverage, including `tests/concurrency/test_hot_visibility.py`, `tests/integration/test_hot_fallback.py`, `tests/property/test_hot_chain.py`.
 
-Expected: chain traversal/fallback edge cases fail.
+Historical expected evidence: chain traversal/fallback edge cases fail.
 
-- [ ] **Step 3: Select the first visible chain member**
+**Recorded activity 3 — Select the first visible chain member**
 
 Starting from the indexed root, decode each same-page linked version in order
 and return the newest member visible to the supplied snapshot/current XID.
@@ -448,34 +359,21 @@ Sequential scans skip HOT continuation slots as roots and yield a chain at
 most once. Ordinary update breaks no existing chain: it adds a normal index
 entry for the new key/version and leaves old root candidates for old snapshots.
 
-- [ ] **Step 4: Run HOT visibility/fallback tests**
+**Recorded activity 4 — Verification intent: HOT visibility/fallback tests**
 
-```bash
-uv run pytest -q tests/concurrency/test_hot_visibility.py \
-  tests/integration/test_hot_fallback.py tests/property/test_hot_chain.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/concurrency/test_hot_visibility.py`, `tests/integration/test_hot_fallback.py`, `tests/property/test_hot_chain.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 7: HOT pruning during Vacuum
 
-```bash
-git add src/minipostgres/storage/heap.py tests/concurrency \
-  tests/integration/test_hot_fallback.py tests/property/test_hot_chain.py
-git commit -m "feat: resolve HOT chains per snapshot"
-```
+**Recorded file scope:**
+- Changed: `src/minipostgres/maintenance/vacuum.py`
+- Changed: `src/minipostgres/maintenance/hot.py`
+- Added: `tests/integration/test_hot_pruning.py`
+- Added: `tests/reliability/test_hot_recovery.py`
 
-### Task 7: HOT pruning during Vacuum
-
-**Files:**
-- Modify: `src/minipostgres/maintenance/vacuum.py`
-- Modify: `src/minipostgres/maintenance/hot.py`
-- Create: `tests/integration/test_hot_pruning.py`
-- Create: `tests/reliability/test_hot_recovery.py`
-
-- [ ] **Step 1: Write failing chain-pruning tests**
+**Recorded activity 1 — Test intent: failing chain-pruning tests**
 
 ```python
 def test_vacuum_prunes_dead_middle_versions_and_preserves_root_tid(engine) -> None:
@@ -494,16 +392,13 @@ def test_active_snapshot_keeps_needed_hot_intermediate(engine) -> None:
     assert reader.execute("SELECT age FROM users WHERE id = 1").rows == ((21,),)
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-```bash
-uv run pytest -q tests/integration/test_hot_pruning.py \
-  tests/reliability/test_hot_recovery.py
-```
+Historical verification covered targeted or full test coverage, including `tests/integration/test_hot_pruning.py`, `tests/reliability/test_hot_recovery.py`.
 
-Expected: Vacuum treats versions independently and cannot rewrite chains.
+Historical expected evidence: Vacuum treats versions independently and cannot rewrite chains.
 
-- [ ] **Step 3: Prune only globally dead intermediates**
+**Recorded activity 3 — Prune only globally dead intermediates**
 
 Walk each HOT root under maintenance lease. Keep root slot while an index
 points to it. For each DEAD intermediate, link its predecessor directly to its
@@ -513,34 +408,21 @@ slot as a redirect containing only `next_tid`; it remains the index target.
 Detect corrupt cycles/off-page links before mutation. Recovery uses the page
 post-image and index rebuild, making pruning idempotent.
 
-- [ ] **Step 4: Run pruning/recovery tests**
+**Recorded activity 4 — Verification intent: pruning/recovery tests**
 
-```bash
-uv run pytest -q tests/integration/test_hot_pruning.py \
-  tests/reliability/test_hot_recovery.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/integration/test_hot_pruning.py`, `tests/reliability/test_hot_recovery.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 8: Vacuum refreshes physical statistics and free space
 
-```bash
-git add src/minipostgres/maintenance tests/integration/test_hot_pruning.py \
-  tests/reliability/test_hot_recovery.py
-git commit -m "feat: prune globally dead HOT versions"
-```
+**Recorded file scope:**
+- Changed: `src/minipostgres/maintenance/vacuum.py`
+- Changed: `src/minipostgres/catalog/statistics.py`
+- Changed: `src/minipostgres/storage/free_space.py`
+- Added: `tests/integration/test_vacuum_metadata.py`
 
-### Task 8: Vacuum refreshes physical statistics and free space
-
-**Files:**
-- Modify: `src/minipostgres/maintenance/vacuum.py`
-- Modify: `src/minipostgres/catalog/statistics.py`
-- Modify: `src/minipostgres/storage/free_space.py`
-- Create: `tests/integration/test_vacuum_metadata.py`
-
-- [ ] **Step 1: Write failing metadata repair tests**
+**Recorded activity 1 — Test intent: failing metadata repair tests**
 
 ```python
 def test_vacuum_repairs_fsm_and_invalidates_stale_logical_stats(engine) -> None:
@@ -556,49 +438,34 @@ def test_vacuum_repairs_fsm_and_invalidates_stale_logical_stats(engine) -> None:
     assert engine.statistics.table(users_id).row_count < old_stats.row_count
 ```
 
-- [ ] **Step 2: Run test and verify RED**
+**Recorded activity 2 — Verification intent: test and verify RED**
 
-```bash
-uv run pytest -q tests/integration/test_vacuum_metadata.py
-```
+Historical verification covered targeted or full test coverage, including `tests/integration/test_vacuum_metadata.py`.
 
-Expected: Vacuum does not coordinate all metadata.
+Historical expected evidence: Vacuum does not coordinate all metadata.
 
-- [ ] **Step 3: Publish post-maintenance metadata**
+**Recorded activity 3 — Publish post-maintenance metadata**
 
 After all page changes are durable in buffer/WAL order, write the complete FSM
 sidecar by atomic replace and mark table statistics stale without changing
 their prior values. Optimizer uses stale stats but exposes the stale flag in
 EXPLAIN. Vacuum never runs ANALYZE implicitly.
 
-- [ ] **Step 4: Run metadata tests**
+**Recorded activity 4 — Verification intent: metadata tests**
 
-```bash
-uv run pytest -q tests/integration/test_vacuum_metadata.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/integration/test_vacuum_metadata.py`.
 
-Expected: all commands pass.
+Historical expected evidence: all commands pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 9: Optional PostgreSQL 18 differential profile
 
-```bash
-git add src/minipostgres/maintenance/vacuum.py \
-  src/minipostgres/catalog/statistics.py \
-  src/minipostgres/storage/free_space.py tests/integration/test_vacuum_metadata.py
-git commit -m "feat: repair storage metadata after Vacuum"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/differential/__init__.py`
+- Added: `src/minipostgres/differential/postgres.py`
+- Added: `tests/differential/test_postgres18.py`
+- Added: `tests/differential/cases.py`
 
-### Task 9: Optional PostgreSQL 18 differential profile
-
-**Files:**
-- Create: `src/minipostgres/differential/__init__.py`
-- Create: `src/minipostgres/differential/postgres.py`
-- Create: `tests/differential/test_postgres18.py`
-- Create: `tests/differential/cases.py`
-
-- [ ] **Step 1: Write profile-gated comparison tests**
+**Recorded activity 1 — Test intent: profile-gated comparison tests**
 
 ```python
 @pytest.mark.parametrize("case", frozen_differential_cases())
@@ -613,19 +480,17 @@ def test_differential_profile_is_explicitly_skipped_without_dsn() -> None:
     assert result.returncode == 0
 ```
 
-- [ ] **Step 2: Run default profile and verify RED**
+**Recorded activity 2 — Verification intent: default profile and verify RED**
 
-```bash
-uv run pytest -q tests/differential/test_postgres18.py
-```
+Historical verification covered targeted or full test coverage, including `tests/differential/test_postgres18.py`.
 
-Expected: adapter/profile gate is absent.
+Historical expected evidence: adapter/profile gate is absent.
 
-- [ ] **Step 3: Implement an optional psycopg profile**
+**Recorded activity 3 — Design outcome: an optional psycopg profile**
 
-Add `psycopg[binary]` to a named `postgres18` dependency group, not default
+The recorded scope added `psycopg[binary]` to a named `postgres18` dependency group, not default
 runtime dependencies. Activate only when `MINIPOSTGRES_PG18_DSN` is set.
-Verify `SHOW server_version_num` is between `180000` and `189999`; otherwise
+Historical validation checked `SHOW server_version_num` is between `180000` and `189999`; otherwise
 skip with a precise reason.
 
 Compare only frozen deterministic cases covering literals/null logic, DML,
@@ -633,34 +498,22 @@ inner join, aggregates, explicit ordering, Read Committed, and Repeatable Read.
 Normalize result values and command effects. Do not compare errors, planner
 text, timing, locale collation, FLOAT NaN behavior, or unordered rows.
 
-- [ ] **Step 4: Run default and configured commands**
+**Recorded activity 4 — Verification intent: default and configured commands**
 
-```bash
-uv run pytest -q
-uv sync --group postgres18
-MINIPOSTGRES_PG18_DSN="$MINIPOSTGRES_PG18_DSN" \
-  uv run --group postgres18 pytest -q tests/differential
-```
+Historical verification covered targeted or full test coverage, including `tests/differential`.
 
-Expected: default suite skips external cases cleanly; configured command passes
+Historical expected evidence: default suite skips external cases cleanly; configured command passes
 when a PostgreSQL 18 service is available. Absence of a configured service is
 not presented as live differential proof.
 
-- [ ] **Step 5: Commit**
+### Milestone 10: Structured final evidence matrix
 
-```bash
-git add pyproject.toml uv.lock src/minipostgres/differential tests/differential
-git commit -m "test: compare the frozen subset with PostgreSQL 18"
-```
+**Recorded file scope:**
+- Added: `src/minipostgres/acceptance.py`
+- Added: `BEHAVIOR_MATRIX.md`
+- Added: `tests/acceptance/test_behavior_matrix.py`
 
-### Task 10: Structured final evidence matrix
-
-**Files:**
-- Create: `src/minipostgres/acceptance.py`
-- Create: `BEHAVIOR_MATRIX.md`
-- Create: `tests/acceptance/test_behavior_matrix.py`
-
-- [ ] **Step 1: Write failing evidence-coverage test**
+**Recorded activity 1 — Test intent: failing evidence-coverage test**
 
 ```python
 def test_every_graduation_requirement_has_direct_evidence() -> None:
@@ -677,17 +530,15 @@ def test_every_graduation_requirement_has_direct_evidence() -> None:
         assert all(pytest_node_exists(nodeid) for nodeid in entry.test_nodeids)
 ```
 
-- [ ] **Step 2: Run coverage test and verify RED**
+**Recorded activity 2 — Verification intent: coverage test and verify RED**
 
-```bash
-uv run pytest -q tests/acceptance/test_behavior_matrix.py
-```
+Historical verification covered targeted or full test coverage, including `tests/acceptance/test_behavior_matrix.py`.
 
-Expected: matrix/parser does not exist.
+Historical expected evidence: matrix/parser does not exist.
 
-- [ ] **Step 3: Implement machine-readable Markdown evidence**
+**Recorded activity 3 — Design outcome: machine-readable Markdown evidence**
 
-Use one Markdown table row per behavior with columns:
+The design used one Markdown table row per behavior with columns:
 
 ```text
 Area | Implemented contract | Source owner | Direct tests | Deliberate difference
@@ -698,36 +549,24 @@ and checks paths/node IDs. Link interfaces to unit tests, semantics to contract/
 integration tests, and failure properties to concurrency/crash tests. Do not
 use README claims or a broad test command as substitute evidence.
 
-- [ ] **Step 4: Run matrix validation**
+**Recorded activity 4 — Verification intent: matrix validation**
 
-```bash
-uv run pytest -q tests/acceptance/test_behavior_matrix.py
-uv run ruff check src tests
-uv run pyright src
-```
+Historical verification covered targeted or full test coverage, static analysis, including `tests/acceptance/test_behavior_matrix.py`.
 
-Expected: all entries resolve and pass.
+Historical expected evidence: all entries resolve and pass.
 
-- [ ] **Step 5: Commit**
+### Milestone 11: End-to-end final acceptance
 
-```bash
-git add src/minipostgres/acceptance.py BEHAVIOR_MATRIX.md \
-  tests/acceptance/test_behavior_matrix.py
-git commit -m "docs: map MiniPostgres behavior to direct evidence"
-```
+**Recorded file scope:**
+- Added: `tests/acceptance/test_final_acceptance.py`
+- Added: `examples/demo.py`
+- Changed: `README.md`
+- Changed: `SCOPE.md`
+- Changed: `ARCHITECTURE.md`
+- Changed: `BEHAVIORAL_CONTRACT.md`
+- Changed: `DIFFERENCES_FROM_POSTGRESQL.md`
 
-### Task 11: End-to-end final acceptance
-
-**Files:**
-- Create: `tests/acceptance/test_final_acceptance.py`
-- Create: `examples/demo.py`
-- Modify: `README.md`
-- Modify: `SCOPE.md`
-- Modify: `ARCHITECTURE.md`
-- Modify: `BEHAVIORAL_CONTRACT.md`
-- Modify: `DIFFERENCES_FROM_POSTGRESQL.md`
-
-- [ ] **Step 1: Write failing final lifecycle test**
+**Recorded activity 1 — Test intent: failing final lifecycle test**
 
 ```python
 def test_final_acceptance_crosses_query_restart_crash_and_maintenance(
@@ -749,15 +588,13 @@ def test_final_acceptance_crosses_query_restart_crash_and_maintenance(
     assert_no_owned_frames_locks_transactions_or_temp_files(tmp_path)
 ```
 
-- [ ] **Step 2: Run final test and verify RED**
+**Recorded activity 2 — Verification intent: final test and verify RED**
 
-```bash
-uv run pytest -q tests/acceptance/test_final_acceptance.py
-```
+Historical verification covered targeted or full test coverage, including `tests/acceptance/test_final_acceptance.py`.
 
-Expected: at least one final contract/helper/document is incomplete.
+Historical expected evidence: at least one final contract/helper/document is incomplete.
 
-- [ ] **Step 3: Finish public documentation and executable demo**
+**Recorded activity 3 — Finish public documentation and executable demo**
 
 README leads with project identity, direct API, mechanism list, install/demo,
 verification, and non-compatibility. SCOPE freezes SQL/types/exclusions.
@@ -767,39 +604,25 @@ semantics/invariants. DIFFERENCES owns every deliberate PostgreSQL divergence.
 DML, join/aggregate, index/EXPLAIN, transaction, restart, and Vacuum without
 external services.
 
-- [ ] **Step 4: Run final project verification**
+**Recorded activity 4 — Verification intent: final project verification**
 
-```bash
-uv sync
-uv run ruff check .
-uv run pyright src
-uv run pytest -q
-uv run python examples/demo.py
-git diff --check
-git status --short --branch
-```
+Historical verification covered targeted or full test coverage, static analysis, diff hygiene, repository-state inspection.
 
-Expected: static checks and all default tests pass, demo exits zero with the
+Historical expected evidence: static checks and all default tests pass, demo exits zero with the
 documented output, diff check is silent, and only intended final changes exist.
 
-- [ ] **Step 5: Commit final reference-project acceptance**
+**Recorded activity 5 — Commit final reference-project acceptance**
 
-```bash
-git add README.md SCOPE.md ARCHITECTURE.md BEHAVIORAL_CONTRACT.md \
-  DIFFERENCES_FROM_POSTGRESQL.md examples tests/acceptance
-git commit -m "docs: accept the MiniPostgres reference project"
-```
+### Milestone 12: Completion audit and clean shutdown evidence
 
-### Task 12: Completion audit and clean shutdown evidence
+**Recorded file scope:**
+- Changed: `tests/acceptance/test_final_acceptance.py`
+- Changed: `BEHAVIOR_MATRIX.md`
+- Changed: `README.md`
 
-**Files:**
-- Modify: `tests/acceptance/test_final_acceptance.py`
-- Modify: `BEHAVIOR_MATRIX.md`
-- Modify: `README.md`
+**Recorded activity 1 — Audit every explicit specification requirement**
 
-- [ ] **Step 1: Audit every explicit specification requirement**
-
-Create a local audit table from all numbered requirements in:
+The recorded scope added a local audit table from all numbered requirements in:
 
 ```text
 docs/superpowers/specs/2026-07-27-minipostgres-reference-project-design.md
@@ -814,53 +637,29 @@ For each item record direct source, exact test node ID, and latest command
 evidence. Treat missing, indirect, or merely plausible evidence as incomplete
 and add/fix implementation tests before proceeding.
 
-- [ ] **Step 2: Verify clean lifecycle ownership**
+**Recorded activity 2 — Verify clean lifecycle ownership**
 
-Run:
+Historical verification covered targeted or full test coverage, including `tests/acceptance/test_final_acceptance.py`, `tests/acceptance/test_behavior_matrix.py`, `tests/crash`.
 
-```bash
-uv run pytest -q \
-  tests/acceptance/test_final_acceptance.py \
-  tests/acceptance/test_behavior_matrix.py \
-  tests/crash
-```
-
-Expected: pass with no thread warnings, leaked locks/pins/transactions, open
+Historical expected evidence: pass with no thread warnings, leaked locks/pins/transactions, open
 temporary files, or unhandled background exceptions.
 
-- [ ] **Step 3: Re-run static and full dynamic evidence fresh**
+**Recorded activity 3 — Re-run static and full dynamic evidence fresh**
 
-Run:
+Historical verification covered targeted or full test coverage, static analysis, diff hygiene.
 
-```bash
-uv run ruff check .
-uv run pyright src
-uv run pytest -q
-git diff --check
-```
+Historical expected evidence: all commands pass from the current HEAD.
 
-Expected: all commands pass from the current HEAD.
+**Recorded activity 4 — Confirm clean repository**
 
-- [ ] **Step 4: Confirm clean repository**
+Historical verification covered repository-state inspection.
 
-Run:
-
-```bash
-git status --short --branch
-git log -12 --oneline
-```
-
-Expected: `## main` with no worktree entries and a traceable sequence of
+Historical expected evidence: `## main` with no worktree entries and a traceable sequence of
 mechanism/acceptance commits.
 
-- [ ] **Step 5: Record final verified acceptance commit**
+**Recorded activity 5 — Record final verified acceptance commit**
 
 If audit fixes changed evidence/docs:
-
-```bash
-git add BEHAVIOR_MATRIX.md README.md tests/acceptance
-git commit -m "docs: verify final MiniPostgres acceptance"
-```
 
 If no files changed, retain the existing final acceptance commit and report
 the fresh commands without creating an empty commit.
@@ -885,4 +684,3 @@ the fresh commands without creating an empty commit.
   smoke test.
 - No task creates course chapters, wire protocol, replication, SSI, TOAST, or
   production autovacuum.
-
