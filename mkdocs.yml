@@ -1,8 +1,8 @@
 site_name: MiniPostgres Tutorial
 site_description: A chapter-based guide to MiniPostgres and the PostgreSQL mechanisms it models
-site_url: https://system-in-miniature.github.io/MiniPostgres/
-repo_url: https://github.com/system-in-miniature/MiniPostgres
-repo_name: system-in-miniature/MiniPostgres
+site_url: https://system-in-miniature.github.io/mini-postgres/
+repo_url: https://github.com/system-in-miniature/mini-postgres
+repo_name: system-in-miniature/mini-postgres
 docs_dir: docs
 
 theme:
@@ -24,7 +24,7 @@ nav:
           - "Architecture Reference": architecture-reference.md
           - "Behavioral Contract": behavioral-contract.md
           - "Behavior Matrix": behavior-matrix.md
-          - "Original Lab Index": https://github.com/system-in-miniature/MiniPostgres/blob/main/LABS.md
+          - "Original Lab Index": https://github.com/system-in-miniature/mini-postgres/blob/main/LABS.md
           - "Scope": scope.md
           - "Design History Archive": superpowers/README.md
   - 中文版:

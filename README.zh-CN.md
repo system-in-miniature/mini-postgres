@@ -1,6 +1,6 @@
 # MiniPostgres
 
-[![CI](https://github.com/system-in-miniature/MiniPostgres/actions/workflows/ci.yml/badge.svg)](https://github.com/system-in-miniature/MiniPostgres/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)
+[![CI](https://github.com/system-in-miniature/mini-postgres/actions/workflows/ci.yml/badge.svg)](https://github.com/system-in-miniature/mini-postgres/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)
 
 > **Language**: [English](README.md) | 简体中文
 
