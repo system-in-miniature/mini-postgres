@@ -1,5 +1,7 @@
 # MiniPostgres
 
+> **Language**: English | [简体中文](README.zh-CN.md)
+
 MiniPostgres is a PostgreSQL-inspired, single-process relational database
 kernel written in Python. It is **not PostgreSQL-compatible**: there is no
 PostgreSQL wire protocol, `psql` endpoint, or claim of complete SQL
