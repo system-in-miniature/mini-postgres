@@ -175,9 +175,22 @@ def _rewrite_bottom_up(plan: LogicalPlan) -> LogicalPlan:
                 )
                 for assignment in plan.assignments
             ),
+            recheck_predicate=(
+                None
+                if plan.recheck_predicate is None
+                else fold_expression(plan.recheck_predicate)
+            ),
         )
     if isinstance(plan, LogicalDelete):
-        return replace(plan, child=_rewrite_bottom_up(plan.child))
+        return replace(
+            plan,
+            child=_rewrite_bottom_up(plan.child),
+            recheck_predicate=(
+                None
+                if plan.recheck_predicate is None
+                else fold_expression(plan.recheck_predicate)
+            ),
+        )
     return plan
 
 

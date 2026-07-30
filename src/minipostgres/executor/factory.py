@@ -127,8 +127,14 @@ def _build_executor(
                 plan.table,
                 plan.assignments,
                 context,
+                plan.recheck_predicate,
             )
         if plan.operation == "DELETE":
-            return DeleteExecutor(child, plan.table, context)
+            return DeleteExecutor(
+                child,
+                plan.table,
+                context,
+                plan.recheck_predicate,
+            )
         raise TypeError(f"unsupported modification: {plan.operation}")
     raise TypeError(f"physical plan has no query executor: {type(plan).__name__}")

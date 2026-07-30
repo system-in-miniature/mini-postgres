@@ -71,3 +71,28 @@ def test_integer_arithmetic_checks_overflow_and_division_by_zero() -> None:
         evaluate(add, _empty_row())
     with pytest.raises(TypeMismatch, match="division by zero"):
         evaluate(divide, _empty_row())
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "expected"),
+    (
+        (2**62, 3, 1537228672809129301),
+        (-7, 3, -2),
+        (7, -3, -2),
+        (-7, -3, 2),
+    ),
+)
+def test_integer_division_truncates_toward_zero_without_float_conversion(
+    left: int,
+    right: int,
+    expected: int,
+) -> None:
+    expression = BoundBinary(
+        BoundLiteral(left, DataType.INT64, False),
+        "/",
+        BoundLiteral(right, DataType.INT64, False),
+        DataType.INT64,
+        False,
+    )
+
+    assert evaluate(expression, _empty_row()) == expected

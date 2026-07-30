@@ -159,12 +159,14 @@ class CostBasedOptimizer:
                 logical.table,
                 self._optimize(logical.child),
                 assignments=logical.assignments,
+                recheck_predicate=logical.recheck_predicate,
             )
         if isinstance(logical, LogicalDelete):
             return self._modify(
                 "DELETE",
                 logical.table,
                 self._optimize(logical.child),
+                recheck_predicate=logical.recheck_predicate,
             )
         raise TypeError(f"cannot optimize logical plan: {type(logical).__name__}")
 

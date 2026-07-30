@@ -81,9 +81,11 @@ class LogicalUpdate(LogicalPlan):
     table: TableMetadata
     assignments: tuple[BoundAssignment, ...]
     child: LogicalPlan
+    recheck_predicate: BoundExpr | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class LogicalDelete(LogicalPlan):
     table: TableMetadata
     child: LogicalPlan
+    recheck_predicate: BoundExpr | None = None

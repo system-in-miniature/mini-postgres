@@ -98,7 +98,14 @@ def _binary(expression: BoundBinary, row: ExecutionRow) -> Scalar:
         result = numeric_left * numeric_right
     elif operator == "/":
         if expression.data_type is DataType.INT64:
-            result = int(numeric_left / numeric_right)
+            integer_left = cast(int, numeric_left)
+            integer_right = cast(int, numeric_right)
+            magnitude = abs(integer_left) // abs(integer_right)
+            result = (
+                -magnitude
+                if (integer_left < 0) != (integer_right < 0)
+                else magnitude
+            )
         else:
             result = numeric_left / numeric_right
     else:

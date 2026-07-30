@@ -115,6 +115,7 @@ class PhysicalModifyTable(PhysicalPlan):
     child: PhysicalPlan
     target_columns: tuple[Column, ...] = ()
     assignments: tuple[BoundAssignment, ...] = ()
+    recheck_predicate: BoundExpr | None = None
 
 
 def explain_plan(

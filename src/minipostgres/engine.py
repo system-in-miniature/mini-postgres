@@ -270,7 +270,7 @@ class Database:
         if isinstance(bound, BoundCreateTable):
             return self._create_table(bound)
         if isinstance(bound, BoundCreateIndex):
-            return self._create_index(bound)
+            return self._create_index(bound, context)
         if isinstance(bound, BoundAnalyze):
             return self._analyze(bound)
         if isinstance(bound, BoundVacuum):
@@ -366,7 +366,12 @@ class Database:
             )
         )
 
-    def _create_index(self, statement: BoundCreateIndex) -> QueryResult:
+    def _create_index(
+        self,
+        statement: BoundCreateIndex,
+        context: ExecutionContext,
+    ) -> QueryResult:
+        assert context.statuses is not None
         metadata = self._catalog.prepare_index(
             statement.name,
             statement.table.table_id,
@@ -384,7 +389,7 @@ class Database:
             build_pool = BufferPool(build_disk, frame_count=8)
             tree = BTree.open(build_pool, metadata.index_id)
             seen: set[bytes] = set()
-            for tid, values in source.scan():
+            for tid, values in source.scan_globally_live(context.statuses):
                 try:
                     key = codec.encode(
                         tuple(

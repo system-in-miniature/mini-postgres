@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from minipostgres.catalog.catalog import Catalog
 from minipostgres.catalog.model import Column
+from minipostgres.errors import NumericOverflow
 from minipostgres.executor.base import ExecutionContext, collect
 from minipostgres.executor.factory import build_executor
 from minipostgres.executor.operators import (
@@ -122,6 +125,26 @@ def test_grouped_aggregate_applies_null_rules(
         (1, 2, 30),
         (2, 0, None),
     ]
+
+
+def test_integer_sum_rejects_int64_overflow(
+    execution_context: ExecutionContext,
+) -> None:
+    orders = execution_context.table(2)
+    maximum = 2**63 - 1
+    orders.insert((1, maximum))
+    orders.insert((1, maximum))
+    total = BoundColumn(ColumnBinding(2, 1), "total", DataType.INT64, True)
+    summed = BoundFunction("SUM", (total,), DataType.INT64, True)
+    aggregate = AggregateExecutor(
+        SeqScanExecutor(2, execution_context),
+        (),
+        (summed,),
+        execution_context,
+    )
+
+    with pytest.raises(NumericOverflow):
+        collect(aggregate)
 
 
 def test_sort_limit_respects_direction_and_null_order(

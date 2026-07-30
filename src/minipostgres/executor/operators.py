@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from functools import cmp_to_key
 from typing import cast
 
@@ -24,7 +25,7 @@ from minipostgres.sql.bound import (
 )
 from minipostgres.storage.indexed import IndexedTableAccess
 from minipostgres.transaction.locks import LockManager
-from minipostgres.types import Scalar
+from minipostgres.types import DataType, Scalar, validate_int64
 
 
 def _table_row(
@@ -526,11 +527,13 @@ class UpdateExecutor(ModificationExecutor):
         table: TableMetadata,
         assignments: tuple[BoundAssignment, ...],
         context: ExecutionContext,
+        recheck_predicate: BoundExpr | None = None,
     ) -> None:
         super().__init__(child)
         self._table = table
         self._assignments = assignments
         self._context = context
+        self._recheck_predicate = recheck_predicate
 
     def _open(self) -> None:
         candidates: list[tuple[TID, tuple[Scalar, ...]]] = []
@@ -588,14 +591,17 @@ class UpdateExecutor(ModificationExecutor):
                     assert self._context.transaction is not None
                     assert self._context.snapshot is not None
                     assert self._context.statuses is not None
-                    replacement = access.replace_mvcc(
+                    replacement, predicate_matched = access.replace_mvcc(
                         tid,
                         self._context.transaction,
                         self._context.snapshot,
                         self._context.statuses,
                         _locks(self._context),
                         values,
+                        self._predicate_recheck(),
                     )
+                    if not predicate_matched:
+                        continue
                 else:
                     replacement = access.replace(tid, values)
                 if replacement is None:
@@ -612,6 +618,18 @@ class UpdateExecutor(ModificationExecutor):
             raise
         self._affected = affected
 
+    def _predicate_recheck(
+        self,
+    ) -> Callable[[tuple[Scalar, ...]], bool] | None:
+        predicate = self._recheck_predicate
+        if predicate is None:
+            return None
+
+        def recheck(values: tuple[Scalar, ...]) -> bool:
+            return _matches_predicate(self._table, predicate, values)
+
+        return recheck
+
 
 class DeleteExecutor(ModificationExecutor):
     def __init__(
@@ -619,10 +637,12 @@ class DeleteExecutor(ModificationExecutor):
         child: Executor,
         table: TableMetadata,
         context: ExecutionContext,
+        recheck_predicate: BoundExpr | None = None,
     ) -> None:
         super().__init__(child)
         self._table = table
         self._context = context
+        self._recheck_predicate = recheck_predicate
 
     def _open(self) -> None:
         tids: list[TID] = []
@@ -640,18 +660,45 @@ class DeleteExecutor(ModificationExecutor):
         access = self._context.table(self._table.table_id)
         if _has_mvcc(self._context) and isinstance(access, IndexedTableAccess):
             assert self._context.transaction is not None
+            assert self._context.snapshot is not None
             assert self._context.statuses is not None
             self._affected = sum(
                 access.delete_mvcc(
                     tid,
                     self._context.transaction,
+                    self._context.snapshot,
                     self._context.statuses,
                     _locks(self._context),
+                    self._predicate_recheck(),
                 )
                 for tid in tids
             )
         else:
             self._affected = sum(access.delete(tid) for tid in tids)
+
+    def _predicate_recheck(
+        self,
+    ) -> Callable[[tuple[Scalar, ...]], bool] | None:
+        predicate = self._recheck_predicate
+        if predicate is None:
+            return None
+
+        def recheck(values: tuple[Scalar, ...]) -> bool:
+            return _matches_predicate(self._table, predicate, values)
+
+        return recheck
+
+
+def _matches_predicate(
+    table: TableMetadata,
+    predicate: BoundExpr,
+    values: tuple[Scalar, ...],
+) -> bool:
+    cells = {
+        ColumnBinding(table.table_id, column.column_id): value
+        for column, value in zip(table.schema.columns, values, strict=True)
+    }
+    return evaluate(predicate, ExecutionRow(cells, {})) is True
 
 
 def _has_mvcc(context: ExecutionContext) -> bool:
@@ -692,7 +739,10 @@ def _aggregate_value(
     if not values:
         return None
     if aggregate.name == "SUM":
-        return sum(cast(list[int | float], values))
+        result = sum(cast(list[int | float], values))
+        if aggregate.data_type is DataType.INT64:
+            return validate_int64(cast(int, result))
+        return result
     if aggregate.name == "AVG":
         return float(sum(cast(list[int | float], values))) / len(values)
     if aggregate.name == "MIN":

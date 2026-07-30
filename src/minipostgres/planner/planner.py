@@ -69,12 +69,17 @@ class Planner:
             )
             if statement.where is not None:
                 child = LogicalFilter(child, statement.where)
-            return LogicalUpdate(statement.table, statement.assignments, child)
+            return LogicalUpdate(
+                statement.table,
+                statement.assignments,
+                child,
+                statement.where,
+            )
         if isinstance(statement, BoundDelete):
             child = LogicalScan(BoundTable(statement.table, statement.table.name))
             if statement.where is not None:
                 child = LogicalFilter(child, statement.where)
-            return LogicalDelete(statement.table, child)
+            return LogicalDelete(statement.table, child, statement.where)
         raise BindError(f"statement has no relational plan: {type(statement).__name__}")
 
     def _select(self, statement: BoundSelect) -> LogicalPlan:
@@ -144,12 +149,14 @@ class Planner:
                 plan.table,
                 self.physical(plan.child),
                 assignments=plan.assignments,
+                recheck_predicate=plan.recheck_predicate,
             )
         if isinstance(plan, LogicalDelete):
             return PhysicalModifyTable(
                 "DELETE",
                 plan.table,
                 self.physical(plan.child),
+                recheck_predicate=plan.recheck_predicate,
             )
         raise BindError(f"cannot lower logical plan: {type(plan).__name__}")
 

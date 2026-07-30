@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 from minipostgres.catalog.model import IndexMetadata, Schema
-from minipostgres.errors import ConstraintViolation, TypeMismatch
+from minipostgres.errors import (
+    ConstraintViolation,
+    SerializationConflict,
+    TypeMismatch,
+)
 from minipostgres.executor.memory import TableAccess
 from minipostgres.index.btree import BTree
 from minipostgres.index.key import KeyCodec
@@ -14,6 +18,7 @@ from minipostgres.maintenance.horizon import (
     VersionDisposition,
     classify_version,
 )
+from minipostgres.maintenance.hot import hot_eligible
 from minipostgres.maintenance.vacuum import VacuumResult
 from minipostgres.row import TID
 from minipostgres.storage.heap import HeapTable
@@ -22,7 +27,7 @@ from minipostgres.transaction.locks import (
     TupleLockKey,
     UniqueKeyLockKey,
 )
-from minipostgres.transaction.model import Transaction
+from minipostgres.transaction.model import IsolationLevel, Transaction
 from minipostgres.transaction.snapshot import Snapshot
 from minipostgres.transaction.status import TransactionStatus, TransactionStatusTable
 from minipostgres.types import Scalar
@@ -142,6 +147,12 @@ class IndexedTableAccess:
     ) -> Iterator[tuple[TID, tuple[Scalar, ...]]]:
         return self._mvcc_heap().scan_visible(snapshot, xid, statuses)
 
+    def scan_globally_live(
+        self,
+        statuses: TransactionStatusTable,
+    ) -> Iterator[tuple[TID, tuple[Scalar, ...]]]:
+        return self._mvcc_heap().scan_globally_live(statuses)
+
     def replace(
         self,
         tid: TID,
@@ -175,7 +186,8 @@ class IndexedTableAccess:
         statuses: TransactionStatusTable,
         locks: LockManager,
         values: tuple[Scalar, ...],
-    ) -> TID | None:
+        recheck_predicate: Callable[[tuple[Scalar, ...]], bool] | None = None,
+    ) -> tuple[TID | None, bool]:
         heap = self._mvcc_heap()
         root_tid = heap.root_tid(tid)
         locks.acquire(transaction, TupleLockKey(self.table_id, root_tid))
@@ -184,9 +196,25 @@ class IndexedTableAccess:
             transaction.xid,
             statuses,
         )
+        self._check_repeatable_read_write_conflict(
+            heap,
+            root_tid,
+            transaction,
+            snapshot,
+            statuses,
+            visible,
+        )
         if visible is None:
-            return None
+            return None, True
         visible_tid, old_values = visible
+        # Equivalent (simplified) to EvalPlanQual in PostgreSQL ExecUpdate:
+        # after a writer wait, re-evaluate the predicate on the newest row.
+        if (
+            transaction.isolation is IsolationLevel.READ_COMMITTED
+            and recheck_predicate is not None
+            and not recheck_predicate(old_values)
+        ):
+            return None, False
         validated = self.schema.validate_row(values)
         old_keys = self._keys(old_values)
         new_keys = self._keys(validated)
@@ -205,30 +233,52 @@ class IndexedTableAccess:
             validated,
         )
         if replacement is None:
-            return None
-        hot = (
-            replacement.page_id == visible_tid.page_id
-            and tuple(key for _, key in old_keys)
-            == tuple(key for _, key in new_keys)
+            return None, True
+        hot = hot_eligible(
+            same_heap_page=replacement.page_id == visible_tid.page_id,
+            old_index_keys=tuple(key for _, key in old_keys),
+            new_index_keys=tuple(key for _, key in new_keys),
         )
         if not hot:
             for binding, key in new_keys:
                 binding.tree.insert(key, replacement)
-        return replacement
+        return replacement, True
 
     def delete_mvcc(
         self,
         tid: TID,
         transaction: Transaction,
+        snapshot: Snapshot,
         statuses: TransactionStatusTable,
         locks: LockManager,
+        recheck_predicate: Callable[[tuple[Scalar, ...]], bool] | None = None,
     ) -> bool:
         heap = self._mvcc_heap()
+        root_tid = heap.root_tid(tid)
         locks.acquire(
             transaction,
-            TupleLockKey(self.table_id, heap.root_tid(tid)),
+            TupleLockKey(self.table_id, root_tid),
         )
-        visible = heap.resolve_globally_live(tid, transaction.xid, statuses)
+        visible = heap.resolve_globally_live(
+            root_tid,
+            transaction.xid,
+            statuses,
+        )
+        self._check_repeatable_read_write_conflict(
+            heap,
+            root_tid,
+            transaction,
+            snapshot,
+            statuses,
+            visible,
+        )
+        if (
+            visible is not None
+            and transaction.isolation is IsolationLevel.READ_COMMITTED
+            and recheck_predicate is not None
+            and not recheck_predicate(visible[1])
+        ):
+            return False
         deleted = (
             False
             if visible is None
@@ -239,6 +289,30 @@ class IndexedTableAccess:
             )
         )
         return deleted
+
+    @staticmethod
+    def _check_repeatable_read_write_conflict(
+        heap: HeapTable,
+        root_tid: TID,
+        transaction: Transaction,
+        snapshot: Snapshot,
+        statuses: TransactionStatusTable,
+        globally_live: tuple[TID, tuple[Scalar, ...]] | None,
+    ) -> None:
+        if transaction.isolation is not IsolationLevel.REPEATABLE_READ:
+            return
+        snapshot_visible = heap.resolve_visible(
+            root_tid,
+            snapshot,
+            transaction.xid,
+            statuses,
+        )
+        snapshot_tid = None if snapshot_visible is None else snapshot_visible[0]
+        global_tid = None if globally_live is None else globally_live[0]
+        if snapshot_tid != global_tid:
+            raise SerializationConflict(
+                "could not serialize access due to concurrent update"
+            )
 
     def delete(self, tid: TID) -> bool:
         values = self._heap.fetch(tid)

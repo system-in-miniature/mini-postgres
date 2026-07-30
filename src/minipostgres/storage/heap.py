@@ -176,9 +176,9 @@ class HeapTable:
                 creator_committed = version.xmin in {SYSTEM_XID, current_xid} or (
                     statuses.get(version.xmin) is TransactionStatus.COMMITTED
                 )
-                deleter_committed = version.xmax == current_xid or (
-                    version.xmax != 0
-                    and statuses.get(version.xmax) is TransactionStatus.COMMITTED
+                deleter_committed = version.xmax != 0 and (
+                    version.xmax == current_xid
+                    or statuses.get(version.xmax) is TransactionStatus.COMMITTED
                 )
                 if creator_committed and not deleter_committed:
                     live = (current, version)
@@ -406,6 +406,8 @@ class HeapTable:
         """Return the oldest physical member of the chain containing ``tid``."""
 
         with self._lock:
+            # 教学简化：真实 PG 通过行指针重定向/HOT 标志位 O(1) 定位；
+            # 此处 O(N) 扫描为教学简化，用显式前驱图展示版本链。
             predecessors = {
                 version.next_tid: candidate
                 for candidate, version in self.scan_versions()
