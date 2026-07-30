@@ -221,30 +221,59 @@ Evaluate `NULL = 1 OR FALSE`, `NULL = 1 AND FALSE`, and
     UNKNOWN OR FALSE remains UNKNOWN, FALSE dominates AND, and NOT preserves
     UNKNOWN.
 
-### 3. Hands-on: propose `!=` normalization
+### 3. Hands-on: add `--` line comments
 
-Design a parser-only change that normalizes both `!=` and `<>` to one AST
-operator. Do not edit `src/`.
+Extend the lexer so `--` starts a comment that runs to the newline or EOF.
+A single `-` must remain a `MINUS` token.
 
 Acceptance:
 
-- identify `_COMPARISONS` in `src/minipostgres/sql/parser.py`;
-- provide the exact one-line mapping change; and
-- propose a test proving both spellings produce equal ASTs without a catalog.
+- add the behavior in `src/minipostgres/sql/lexer.py`;
+- add a unit test covering an inline comment, a whole-line comment, and the
+  line/column positions of tokens after the newline; and
+- run `uv run pytest -q tests/unit/sql/test_lexer.py` and get a green result.
 
 ??? note "Reference answer"
 
-    Proposed diff:
+    Detect the two-character opener before `_symbol()` can emit the first
+    minus, then advance to—but not through—the newline. The existing whitespace
+    branch will consume that newline and update the position:
 
     ```diff
-    -    TokenKind.NEQ: "!=",
-    +    TokenKind.NEQ: "<>",
+             if character.isspace():
+                 self._advance()
+                 continue
+    +        if character == "-" and self._peek(1) == "-":
+    +            self._line_comment()
+    +            continue
+             line, column = self._line, self._column
+    @@
+    +    def _line_comment(self) -> None:
+    +        while not self._at_end and self._peek() != "\n":
+    +            self._advance()
     ```
 
-    This assumes the token table uses one `NEQ` kind for both lexemes; verify
-    that assumption in `tokens.py`/`lexer.py`. A parser test can assert
-    `parse("SELECT 1 != 2") == parse("SELECT 1 <> 2")`. If the lexer emits
-    distinct kinds, normalize both entries instead.
+    A focused test is:
+
+    ```python
+    def test_lexer_skips_line_comments_and_preserves_positions() -> None:
+        tokens = lex("SELECT 1 -- inline\n-- whole line\nFROM users")
+
+        assert [token.kind for token in tokens] == [
+            TokenKind.SELECT,
+            TokenKind.INTEGER,
+            TokenKind.FROM,
+            TokenKind.IDENT,
+            TokenKind.EOF,
+        ]
+        assert [(token.line, token.column) for token in tokens] == [
+            (1, 1),
+            (1, 8),
+            (3, 1),
+            (3, 6),
+            (3, 11),
+        ]
+    ```
 
 ### 4. Hands-on: add a binder rejection test
 

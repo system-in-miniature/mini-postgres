@@ -128,26 +128,57 @@ PostgreSQL 的相近所有者包括 `src/backend/parser/scan.l`、`gram.y`、`an
 
     依次为 UNKNOWN、FALSE、UNKNOWN。NULL 比较产生 UNKNOWN；UNKNOWN OR FALSE 仍为 UNKNOWN；FALSE 支配 AND；NOT 保留 UNKNOWN。
 
-### 3. 动手题：设计 `!=` 归一化
+### 3. 动手题：支持 `--` 行注释
 
-设计仅 parser 的改动，使 `!=` 和 `<>` 产生同一个 AST 运算符，但不要修改 `src/`。
+扩展 lexer，使 `--` 开始一段持续到换行或 EOF 的注释。单个 `-` 必须仍产生
+`MINUS` token。
 
 验收方式：
 
-- 指出 `src/minipostgres/sql/parser.py` 的 `_COMPARISONS`；
-- 给出精确的一行 mapping diff；
-- 设计无需目录、证明两种写法 AST 相等的测试。
+- 在 `src/minipostgres/sql/lexer.py` 实现该行为；
+- 添加单元测试，覆盖行尾注释、整行注释，以及换行后 token 的 line/column；
+- 运行 `uv run pytest -q tests/unit/sql/test_lexer.py` 并得到全绿结果。
 
 ??? note "参考答案"
 
-    若 lexer 对两种拼法都产生 `TokenKind.NEQ`，建议：
+    必须在 `_symbol()` 把第一个减号发成 token 之前识别双字符开头，然后推进到
+    换行符之前；现有 whitespace 分支会消费换行并更新位置：
 
     ```diff
-    -    TokenKind.NEQ: "!=",
-    +    TokenKind.NEQ: "<>",
+             if character.isspace():
+                 self._advance()
+                 continue
+    +        if character == "-" and self._peek(1) == "-":
+    +            self._line_comment()
+    +            continue
+             line, column = self._line, self._column
+    @@
+    +    def _line_comment(self) -> None:
+    +        while not self._at_end and self._peek() != "\n":
+    +            self._advance()
     ```
 
-    先在 `tokens.py`/`lexer.py` 核实该前提。测试可断言 `parse("SELECT 1 != 2") == parse("SELECT 1 <> 2")`；若 token kind 不同，则应归一化两个条目。
+    聚焦测试可以写成：
+
+    ```python
+    def test_lexer_skips_line_comments_and_preserves_positions() -> None:
+        tokens = lex("SELECT 1 -- inline\n-- whole line\nFROM users")
+
+        assert [token.kind for token in tokens] == [
+            TokenKind.SELECT,
+            TokenKind.INTEGER,
+            TokenKind.FROM,
+            TokenKind.IDENT,
+            TokenKind.EOF,
+        ]
+        assert [(token.line, token.column) for token in tokens] == [
+            (1, 1),
+            (1, 8),
+            (3, 1),
+            (3, 6),
+            (3, 11),
+        ]
+    ```
 
 ### 4. 动手题：添加 binder 拒绝测试
 
