@@ -1,5 +1,7 @@
 # MiniPostgres
 
+[![CI](https://github.com/system-in-miniature/MiniPostgres/actions/workflows/ci.yml/badge.svg)](https://github.com/system-in-miniature/MiniPostgres/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)
+
 > **Language**: [English](README.md) | 简体中文
 
 MiniPostgres 是一个受 PostgreSQL 启发、用 Python 编写的单进程关系数据库内核。
@@ -105,3 +107,7 @@ uv run python examples/demo.py
 
 本仓库是已完成参考项目的工作区。课程是在参考项目完成后设计的；这里不会生成
 章节、天次、测验或教学交接材料。
+
+## 商标声明
+
+MiniPostgres 是独立的教学项目，与 the PostgreSQL Community Association of Canada 无隶属、背书或赞助关系。"PostgreSQL" 商标归其所有者所有。

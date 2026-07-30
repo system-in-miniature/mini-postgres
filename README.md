@@ -1,5 +1,7 @@
 # MiniPostgres
 
+[![CI](https://github.com/system-in-miniature/MiniPostgres/actions/workflows/ci.yml/badge.svg)](https://github.com/system-in-miniature/MiniPostgres/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)
+
 > **Language**: English | [简体中文](README.zh-CN.md)
 
 MiniPostgres is a PostgreSQL-inspired, single-process relational database
@@ -114,3 +116,7 @@ uv run python examples/demo.py
 This repository is the finished-reference-project workspace.
 The course is designed after the reference project; no chapters, days, quizzes,
 or teaching handoffs are generated here.
+
+## Trademark Notice
+
+MiniPostgres is an independent educational project. It is not affiliated with, endorsed by, or sponsored by the PostgreSQL Community Association of Canada. "PostgreSQL" is a trademark of its respective owner.
