@@ -1,3 +1,5 @@
+"""Snapshot-based tuple visibility, corresponding to PG's MVCC visibility rules."""
+
 from __future__ import annotations
 
 from minipostgres.storage.tuple import SYSTEM_XID, TupleVersion
@@ -11,6 +13,8 @@ def is_visible(
     current_xid: int,
     statuses: TransactionStatusTable,
 ) -> bool:
+    # Corresponds to PostgreSQL's HeapTupleSatisfiesMVCC decision: evaluate
+    # creator visibility first, then whether a deleting XID is visible.
     if version.xmin == current_xid:
         return version.xmax != current_xid
     creator = (

@@ -1,5 +1,7 @@
 # Architecture
 
+> **Language**: English | [简体中文](docs/zh/ARCHITECTURE.md)
+
 ## Query flow
 
 ```text

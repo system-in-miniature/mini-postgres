@@ -231,6 +231,8 @@ class BTree:
         return page_id, path
 
     def _split_leaf(self, page_id: int, page: LeafPage) -> tuple[bytes, int]:
+        # Corresponds to PostgreSQL nbtree leaf splitting: preserve leaf links
+        # and propagate the new right page's first key as a separator.
         split_at = self._leaf_split_position(page.entries)
         left_entries = page.entries[:split_at]
         right_entries = page.entries[split_at:]
@@ -381,6 +383,8 @@ class BTree:
         page: LeafPage,
         path: list[tuple[int, int]],
     ) -> None:
+        # Corresponds to PostgreSQL nbtree deletion maintenance in simplified
+        # form: prefer sibling redistribution, then merge and repair parents.
         if not path:
             return
         if len(encode_leaf(page)) >= PAGE_BODY_SIZE // 2 and page.entries:
@@ -506,6 +510,8 @@ class BTree:
         page: InternalPage,
         ancestors: list[tuple[int, int]],
     ) -> None:
+        # Corresponds to nbtree structural maintenance in teaching form:
+        # borrow from a sibling when possible, otherwise merge and shrink root.
         if page_id == self._root_page_id:
             if len(page.children) == 1 and self._height > 1:
                 self._root_page_id = page.children[0]

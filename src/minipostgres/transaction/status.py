@@ -1,3 +1,5 @@
+"""In-process transaction status table, the teaching analogue of PG CLOG."""
+
 from __future__ import annotations
 
 import threading

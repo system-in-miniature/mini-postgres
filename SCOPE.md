@@ -1,5 +1,7 @@
 # Scope
 
+> **Language**: English | [简体中文](docs/zh/SCOPE.md)
+
 ## Product boundary
 
 MiniPostgres is an in-process relational database kernel, not a network
@@ -104,6 +106,12 @@ updates for unchanged index keys, and final acceptance evidence.
 
 - PostgreSQL wire or on-disk compatibility;
 - complete PostgreSQL grammar, casts, errors, collations, or system catalogs;
+- `HAVING`, `DISTINCT`, `OFFSET`, subqueries, `IN`, `BETWEEN`, `LIKE`, and
+  `OUTER JOIN`;
+- column `DEFAULT` values;
+- `DROP TABLE`, `DROP INDEX`, and `ALTER`;
+- `SELECT FOR UPDATE`, shared row locks, and PostgreSQL's full lock-mode
+  family;
 - users, privileges, foreign keys, views, triggers, stored procedures;
 - parallel query, multiple server processes, replication, or logical decoding;
 - full ARIES/UNDO, TOAST, SSI, XID wraparound/freeze, savepoints, or

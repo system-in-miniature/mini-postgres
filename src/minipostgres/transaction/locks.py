@@ -1,3 +1,5 @@
+"""FIFO writer locks and synchronous wait-for graph deadlock detection."""
+
 from __future__ import annotations
 
 import threading
@@ -91,6 +93,8 @@ class LockManager:
             self._condition.notify_all()
 
     def _wait_graph(self) -> WaitForGraph:
+        # Corresponds to PostgreSQL lock-manager wait dependencies: owners and
+        # earlier FIFO waiters block the transactions queued behind them.
         edges: dict[int, set[int]] = {}
         for resource, queue in self._queues.items():
             blockers: list[int] = []

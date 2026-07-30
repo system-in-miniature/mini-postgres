@@ -1,3 +1,5 @@
+"""Immutable MVCC snapshot state, corresponding to PostgreSQL snapmgr."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

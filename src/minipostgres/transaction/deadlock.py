@@ -1,3 +1,5 @@
+"""Wait-for graph cycle detection, corresponding to PostgreSQL deadlock.c."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,6 +10,8 @@ class WaitForGraph:
     edges: dict[int, set[int]]
 
     def deadlock_victim(self) -> int | None:
+        # PostgreSQL also searches waits-for dependencies for cycles. This
+        # teaching policy chooses the highest XID for deterministic tests.
         visited: set[int] = set()
         stack: list[int] = []
         active: set[int] = set()

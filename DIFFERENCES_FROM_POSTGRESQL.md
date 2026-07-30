@@ -1,5 +1,7 @@
 # Differences from PostgreSQL
 
+> **Language**: English | [简体中文](docs/zh/DIFFERENCES_FROM_POSTGRESQL.md)
+
 MiniPostgres borrows mechanisms and vocabulary from PostgreSQL but deliberately
 differs in product scope and implementation.
 
@@ -13,6 +15,10 @@ differs in product scope and implementation.
 ## Query engine
 
 - handwritten parser and binder;
+- no `HAVING`, `DISTINCT`, `OFFSET`, subqueries, `IN`, `BETWEEN`, `LIKE`,
+  `OUTER JOIN`, or column `DEFAULT` values;
+- no `DROP TABLE`, `DROP INDEX`, `ALTER`, `SELECT FOR UPDATE`, shared row
+  locks, or PostgreSQL-complete lock modes;
 - immutable teaching-oriented plan nodes;
 - exact full-table `ANALYZE`, rather than PostgreSQL sampling and its full
   statistics catalog;
@@ -38,6 +44,26 @@ differs in product scope and implementation.
 - WAL, checkpoint, control, and failpoint formats are custom and versioned;
 - no PostgreSQL page, relation-fork, WAL, checkpoint, or savepoint format
   compatibility is claimed.
+
+### Why the WAL records whole pages
+
+MiniPostgres appends a complete post-change page image for every logged heap
+page mutation. PostgreSQL normally writes a full-page image only on the first
+change to a page after each checkpoint when `full_page_writes` is enabled.
+That image is attached to the normal resource-manager WAL record; block-local
+data may be omitted when the image itself is sufficient. Later changes can use
+the normal physiological record stream without another full-page image.
+
+PostgreSQL makes this split because the first image after a checkpoint is
+enough to repair a torn page whose older on-disk version belongs to that
+checkpoint. Once that protection exists, compact block-local operation records
+greatly reduce WAL volume, memory bandwidth, storage traffic, replication
+traffic, and recovery I/O while retaining physical page-level REDO. The design
+also preserves the resource-manager operation structure instead of reducing
+every change to an opaque page replacement. MiniPostgres chooses an image every
+time because it makes WAL-before-data and REDO idempotence directly observable,
+at the deliberate cost of much larger WAL and without PostgreSQL's
+physiological record model.
 
 ## Transactions and maintenance
 

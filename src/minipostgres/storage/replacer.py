@@ -28,6 +28,8 @@ class ClockReplacer:
     def evict(self) -> int | None:
         """Return one victim after at most two complete sweeps."""
 
+        # Corresponds to PostgreSQL's shared-buffer clock sweep: referenced
+        # frames get a second chance; pinned/non-evictable frames are skipped.
         for _ in range(len(self._evictable) * 2):
             frame_id = self._hand
             self._hand = (self._hand + 1) % len(self._evictable)

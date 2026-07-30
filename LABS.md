@@ -1,5 +1,7 @@
 # Executable Labs
 
+> **Language**: English | [简体中文](docs/zh/LABS.md)
+
 The repository is the finished reference project, so each lab is an executable
 test rather than a teaching chapter.
 

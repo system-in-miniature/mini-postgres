@@ -1,17 +1,20 @@
-"""Decision rule for heap-only tuple updates."""
+"""Central outcome-based decision rule for teaching-scale HOT updates."""
 
 from __future__ import annotations
 
-from collections.abc import Set
-
 
 def hot_eligible(
-    changed_column_ids: Set[int],
-    indexed_column_ids: Set[int],
-    source_free_bytes: int,
-    encoded_tuple_bytes: int,
+    *,
+    same_heap_page: bool,
+    old_index_keys: tuple[bytes, ...],
+    new_index_keys: tuple[bytes, ...],
 ) -> bool:
-    return (
-        changed_column_ids.isdisjoint(indexed_column_ids)
-        and encoded_tuple_bytes <= source_free_bytes
-    )
+    """Return whether an already-placed replacement may remain heap-only.
+
+    PostgreSQL decides HOT eligibility before insertion from modified
+    attributes and page space. MiniPostgres intentionally checks the actual
+    placement and encoded index-key outcome so this helper preserves the
+    existing teaching implementation's behavior exactly.
+    """
+
+    return same_heap_page and old_index_keys == new_index_keys
