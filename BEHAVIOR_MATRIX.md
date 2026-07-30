@@ -1,5 +1,7 @@
 # MiniPostgres Behavior Evidence
 
+> **Language**: English | [简体中文](docs/zh/BEHAVIOR_MATRIX.md)
+
 This table is intentionally machine-readable. Every row names a concrete
 source owner and a directly collectable pytest node.
 

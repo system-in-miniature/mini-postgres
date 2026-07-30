@@ -1,5 +1,7 @@
 # Behavioral Contract
 
+> **Language**: English | [简体中文](docs/zh/BEHAVIORAL_CONTRACT.md)
+
 ## Values and predicates
 
 - integers are signed 64-bit values and overflow raises an error;
