@@ -1,6 +1,6 @@
 # 范围
 
-> **Language**: [English](../../SCOPE.md) | 简体中文
+> **Language**: [English](../scope.md) | 简体中文
 
 ## 产品边界
 

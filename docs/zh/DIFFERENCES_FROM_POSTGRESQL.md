@@ -1,6 +1,6 @@
 # 与 PostgreSQL 的差异
 
-> **Language**: [English](../../DIFFERENCES_FROM_POSTGRESQL.md) | 简体中文
+> **Language**: [English](../differences.md) | 简体中文
 
 MiniPostgres 借鉴了 PostgreSQL 的机制和术语，但在产品范围和实现上有意不同。
 

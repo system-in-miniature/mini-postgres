@@ -1,6 +1,6 @@
 # 行为约定
 
-> **语言**: [English](../../BEHAVIORAL_CONTRACT.md) | 简体中文
+> **语言**: [English](../behavioral-contract.md) | 简体中文
 
 ## 值与谓词
 

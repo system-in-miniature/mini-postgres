@@ -1,6 +1,6 @@
 # MiniPostgres 行为证据
 
-> **语言**: [English](../../BEHAVIOR_MATRIX.md) | 简体中文
+> **语言**: [English](../behavior-matrix.md) | 简体中文
 
 此表特意采用机器可读格式。每一行都给出具体的源码归属方（source owner）和可直接
 收集的 pytest 节点。

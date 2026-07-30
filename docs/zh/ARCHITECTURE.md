@@ -1,6 +1,6 @@
 # 架构
 
-> **Language**: [English](../../ARCHITECTURE.md) | 简体中文
+> **Language**: [English](../architecture-reference.md) | 简体中文
 
 ## 查询流
 
