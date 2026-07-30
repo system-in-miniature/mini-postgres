@@ -7,6 +7,8 @@ docs_dir: docs
 
 theme:
   name: material
+  logo: assets/brand/avatar.svg
+  favicon: assets/brand/avatar.svg
   language: en
   features:
     - navigation.sections
