@@ -17,12 +17,26 @@ theme:
 
 nav:
   - English:
-      - "Chapter 1 · Quick Start": index.md
-      - "Chapter 2 · Architecture Tour": tour.md
-      - "Chapter 3 · Mechanisms and PostgreSQL Mapping": postgresql-mapping.md
-      - "Chapter 4 · Hands-on Labs": labs-guide.md
-      - "Chapter 5 · Differences from PostgreSQL": differences.md
-      - Appendix:
+      - Tutorial:
+          - "Book Contents": tutorial/index.md
+          - "1 · Meet MiniPostgres": tutorial/01-getting-started.md
+          - "2 · The SQL Front End": tutorial/02-sql-frontend.md
+          - "3 · Pages and the Buffer Pool": tutorial/03-storage.md
+          - "4 · MVCC and Snapshots": tutorial/04-mvcc.md
+          - "5 · Persistent B+Tree Indexes": tutorial/05-btree.md
+          - "6 · Cost-Based Planning": tutorial/06-planning.md
+          - "7 · Volcano Execution": tutorial/07-execution.md
+          - "8 · Isolation and EPQ": tutorial/08-isolation.md
+          - "9 · Locks and Deadlocks": tutorial/09-locks-deadlock.md
+          - "10 · WAL and Recovery": tutorial/10-wal-recovery.md
+          - "11 · VACUUM and HOT": tutorial/11-vacuum-hot.md
+          - "12 · Testing Methodology": tutorial/12-testing-methodology.md
+      - Reference:
+          - "Quick Start": index.md
+          - "Architecture Tour": tour.md
+          - "PostgreSQL Mapping": postgresql-mapping.md
+          - "Hands-on Labs": labs-guide.md
+          - "Differences from PostgreSQL": differences.md
           - "Architecture Reference": architecture-reference.md
           - "Behavioral Contract": behavioral-contract.md
           - "Behavior Matrix": behavior-matrix.md
@@ -30,12 +44,26 @@ nav:
           - "Scope": scope.md
           - "Design History Archive": superpowers/README.md
   - 中文版:
-      - "第 1 章 · 快速开始": zh/index.md
-      - "第 2 章 · 架构总览": zh/tour.md
-      - "第 3 章 · 机制与 PostgreSQL 映射": zh/postgresql-mapping.md
-      - "第 4 章 · 动手实验": zh/labs-guide.md
-      - "第 5 章 · 与 PostgreSQL 的差异": zh/DIFFERENCES_FROM_POSTGRESQL.md
-      - 附录:
+      - 教程:
+          - "全书目录": zh/tutorial/index.md
+          - "1 · 认识 MiniPostgres": zh/tutorial/01-getting-started.md
+          - "2 · SQL 前端": zh/tutorial/02-sql-frontend.md
+          - "3 · 页与缓冲": zh/tutorial/03-storage.md
+          - "4 · MVCC 与快照": zh/tutorial/04-mvcc.md
+          - "5 · B+Tree 索引": zh/tutorial/05-btree.md
+          - "6 · 代价规划": zh/tutorial/06-planning.md
+          - "7 · Volcano 执行": zh/tutorial/07-execution.md
+          - "8 · 隔离与 EPQ": zh/tutorial/08-isolation.md
+          - "9 · 锁与死锁": zh/tutorial/09-locks-deadlock.md
+          - "10 · WAL 与恢复": zh/tutorial/10-wal-recovery.md
+          - "11 · VACUUM 与 HOT": zh/tutorial/11-vacuum-hot.md
+          - "12 · 验证方法论": zh/tutorial/12-testing-methodology.md
+      - 参考资料:
+          - "快速开始": zh/index.md
+          - "架构总览": zh/tour.md
+          - "PostgreSQL 映射": zh/postgresql-mapping.md
+          - "动手实验": zh/labs-guide.md
+          - "与 PostgreSQL 的差异": zh/DIFFERENCES_FROM_POSTGRESQL.md
           - "架构参考": zh/ARCHITECTURE.md
           - "行为契约": zh/BEHAVIORAL_CONTRACT.md
           - "行为矩阵": zh/BEHAVIOR_MATRIX.md
