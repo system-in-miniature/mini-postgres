@@ -11,11 +11,13 @@ theme:
   favicon: assets/brand/avatar.svg
   language: en
   features:
+    - navigation.tabs
     - navigation.sections
     - navigation.top
     - content.code.copy
 
 nav:
+  - Home: index.md
   - English:
       - Tutorial:
           - "Book Contents": tutorial/index.md
@@ -32,7 +34,6 @@ nav:
           - "11 · VACUUM and HOT": tutorial/11-vacuum-hot.md
           - "12 · Testing Methodology": tutorial/12-testing-methodology.md
       - Reference:
-          - "Quick Start": index.md
           - "Architecture Tour": tour.md
           - "PostgreSQL Mapping": postgresql-mapping.md
           - "Hands-on Labs": labs-guide.md
@@ -43,7 +44,7 @@ nav:
           - "Original Lab Index": https://github.com/system-in-miniature/mini-postgres/blob/main/LABS.md
           - "Scope": scope.md
           - "Design History Archive": superpowers/README.md
-  - 中文版:
+  - 简体中文:
       - 教程:
           - "全书目录": zh/tutorial/index.md
           - "1 · 认识 MiniPostgres": zh/tutorial/01-getting-started.md
