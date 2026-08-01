@@ -1,0 +1,18 @@
+failure_files = ["tests/unit/test_rows.py", "tests/unit/test_types.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Value and row contract mechanism"
+title_zh = "值与行契约机制"
+summary_en = "Rows own validated values and never let Python coercion silently redefine SQL semantics."
+summary_zh = "Row 拥有已校验值，绝不让 Python 强制转换悄悄改写 SQL 语义。"
+files = ["src/minipostgres/errors.py", "src/minipostgres/row.py", "src/minipostgres/types.py"]
+
+[[blocks]]
+id = "supporting"
+title_en = "Package, fixture, and project support"
+title_zh = "包、Fixture 与工程支撑"
+summary_en = "Keep exports, test corpora, dependencies, and the runtime environment reproducible."
+summary_zh = "保持包导出、测试语料、依赖与运行环境可复现。"
+files = ["README.md", "pyproject.toml", "src/minipostgres/__init__.py", "uv.lock"]
+supporting = true

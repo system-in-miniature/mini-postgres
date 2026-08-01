@@ -1,0 +1,5 @@
+tests/contract/test_constraints.py
+tests/contract/test_database_api.py
+tests/integration/test_join_aggregate.py
+tests/integration/test_query_loop.py
+tests/unit/executor/test_modify_operators.py

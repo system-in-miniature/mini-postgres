@@ -1,0 +1,9 @@
+failure_files = ["tests/unit/sql/test_parser_ddl_dml.py", "tests/unit/sql/test_parser_precedence.py", "tests/unit/sql/test_parser_select.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Precedence-aware SQL parser mechanism"
+title_zh = "感知优先级的 SQL Parser机制"
+summary_en = "Parsing is deterministic and rejects trailing or malformed syntax before catalog access."
+summary_zh = "解析必须确定，并在访问 Catalog 前拒绝尾随或错误语法。"
+files = ["src/minipostgres/sql/ast.py", "src/minipostgres/sql/parser.py"]

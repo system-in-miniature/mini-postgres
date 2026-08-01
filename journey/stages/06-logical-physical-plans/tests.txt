@@ -1,0 +1,2 @@
+tests/unit/planner/test_logical_planner.py
+tests/unit/planner/test_physical_planner.py

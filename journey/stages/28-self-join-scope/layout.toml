@@ -1,0 +1,9 @@
+failure_files = ["tests/acceptance/test_phase_e.py", "tests/contract/test_self_join_scope.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Self-join scope rejection mechanism"
+title_zh = "自连接作用域拒绝机制"
+summary_en = "Unsupported self-join identity is rejected during binding instead of producing ambiguous column ownership."
+summary_zh = "不支持的 Self-join Identity 在 Binding 阶段被拒绝，而不是产生含糊 Column Ownership。"
+files = ["src/minipostgres/sql/binder.py"]

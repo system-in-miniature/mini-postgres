@@ -1,0 +1,18 @@
+failure_files = ["tests/acceptance/test_final_acceptance.py", "tests/concurrency/test_deadlock.py", "tests/concurrency/test_write_conflicts.py", "tests/integration/test_create_index.py", "tests/unit/executor/test_expressions.py", "tests/unit/executor/test_query_operators.py", "tests/unit/sql/test_binder_names.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Cross-layer correctness regressions mechanism"
+title_zh = "跨层正确性回归机制"
+summary_en = "Optimization and concurrency never bypass visibility, conflict, type-range, or predicate-recheck contracts."
+summary_zh = "优化与并发绝不绕过 Visibility、Conflict、Type Range 或 Predicate Recheck 契约。"
+files = ["src/minipostgres/engine.py", "src/minipostgres/executor/expressions.py", "src/minipostgres/executor/factory.py", "src/minipostgres/executor/operators.py", "src/minipostgres/planner/logical.py", "src/minipostgres/planner/optimizer.py", "src/minipostgres/planner/physical.py", "src/minipostgres/planner/planner.py", "src/minipostgres/planner/rules.py", "src/minipostgres/storage/heap.py", "src/minipostgres/storage/indexed.py", "src/minipostgres/transaction/locks.py"]
+
+[[blocks]]
+id = "supporting"
+title_en = "Package, fixture, and project support"
+title_zh = "包、Fixture 与工程支撑"
+summary_en = "Keep exports, test corpora, dependencies, and the runtime environment reproducible."
+summary_zh = "保持包导出、测试语料、依赖与运行环境可复现。"
+files = ["ARCHITECTURE.md", "BEHAVIORAL_CONTRACT.md", "DIFFERENCES_FROM_POSTGRESQL.md", "README.md", "SCOPE.md"]
+supporting = true

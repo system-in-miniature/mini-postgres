@@ -13,6 +13,28 @@ MiniPostgres 是一个用 Python 编写的单进程关系数据库内核。它�
 WAL、恢复、VACUUM 与 HOT 更新。它受 PostgreSQL 启发，但不兼容 PostgreSQL
 线协议或完整 SQL。
 
+## Learning modes / 学习模式
+
+### Mechanism Tutorial / 机制教程
+
+Use the existing twelve chapters for concept-first study of SQL, storage,
+planning, execution, MVCC, locks, WAL, recovery, VACUUM, and HOT. / 希望先建立
+概念与运行时心智模型时，按现有十二章学习 SQL、存储、规划、执行、MVCC、锁、
+WAL、恢复、VACUUM 与 HOT。
+
+### Self-Guided Rebuild / 自主重建
+
+Use the [thirty-stage Journey](journey/index.md) to understand each problem,
+test contract, concept boundary, and grouped code diff in a browser. / 使用
+[三十阶段重建旅程](zh/journey/index.md)，在浏览器中理解每个问题、测试契约、概念边界
+与按机制分组的代码差异。
+
+### Agent-Guided Rebuild / Agent 带教
+
+Use the [CLI guide](agent-guide.md) when you want Codex to interactively teach,
+implement, and verify one Stage. / 希望由 Codex 互动讲解、实现并验收一个 Stage 时，
+参照 [CLI 使用教程](zh/agent-guide.md)。
+
 ## Install / 安装
 
 ```bash

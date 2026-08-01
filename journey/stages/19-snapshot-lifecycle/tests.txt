@@ -1,0 +1,3 @@
+tests/concurrency/test_isolation_snapshots.py
+tests/contract/test_transaction_commands.py
+tests/unit/transaction/test_manager.py

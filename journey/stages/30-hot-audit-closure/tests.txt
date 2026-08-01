@@ -1,0 +1,1 @@
+tests/unit/maintenance/test_hot.py

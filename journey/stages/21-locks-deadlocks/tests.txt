@@ -1,0 +1,2 @@
+tests/unit/transaction/test_deadlock_graph.py
+tests/unit/transaction/test_locks.py

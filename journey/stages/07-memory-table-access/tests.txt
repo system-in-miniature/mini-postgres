@@ -1,0 +1,2 @@
+tests/property/test_memory_table_model.py
+tests/unit/executor/test_memory_table.py

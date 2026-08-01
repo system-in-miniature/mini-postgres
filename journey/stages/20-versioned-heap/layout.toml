@@ -1,0 +1,9 @@
+failure_files = ["tests/concurrency/test_read_phenomena.py", "tests/integration/test_mvcc_heap.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Versioned heap visibility mechanism"
+title_zh = "版本化 Heap 可见性机制"
+summary_en = "Readers recheck visibility, writers preserve version chains, and abort restores the prior observable state."
+summary_zh = "Reader 重检 Visibility，Writer 保持版本链，Abort 恢复此前可观察状态。"
+files = ["src/minipostgres/engine.py", "src/minipostgres/executor/base.py", "src/minipostgres/executor/operators.py", "src/minipostgres/storage/heap.py", "src/minipostgres/storage/indexed.py", "src/minipostgres/storage/slotted.py", "src/minipostgres/transaction/manager.py", "src/minipostgres/transaction/status.py"]

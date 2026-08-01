@@ -1,0 +1,643 @@
+# Stage 19 · 事务与快照生命周期
+
+### 目标
+
+实现事务与快照生命周期，并能从可执行反例、运行时状态与关键语句解释其边界。
+
+??? note "交付文件"
+    - `ARCHITECTURE.md`
+    - `BEHAVIORAL_CONTRACT.md`
+    - `DIFFERENCES_FROM_POSTGRESQL.md`
+    - `src/minipostgres/engine.py`
+    - `src/minipostgres/transaction/manager.py`
+    - `src/minipostgres/transaction/model.py`
+    - `tests/concurrency/test_isolation_snapshots.py`
+    - `tests/contract/test_transaction_commands.py`
+    - `tests/unit/transaction/test_manager.py`
+
+### 当前遇到的问题
+
+MVCC 规则需要所有者按 Isolation Level Begin、Commit、Abort 并刷新 Snapshot。
+
+### 测试契约
+
+#### 先看会坏在哪里
+
+聚焦测试让事务与快照生命周期经历正常路径、边界值、非法输入与本 Stage 可观察的失败边界。
+
+??? note "文件差异：tests/concurrency/test_isolation_snapshots.py"
+    ```diff
+    diff --git a/tests/concurrency/test_isolation_snapshots.py b/tests/concurrency/test_isolation_snapshots.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..f3576e1ab2a7b96a2f227e60098326ed6b912a1a
+    --- /dev/null
+    +++ b/tests/concurrency/test_isolation_snapshots.py
+    @@ -0,0 +1,20 @@
+    +from minipostgres.transaction.manager import TransactionManager
+    +from minipostgres.transaction.model import IsolationLevel
+    +
+    +
+    +def test_read_committed_refreshes_but_repeatable_read_pins_snapshot() -> None:
+    +    manager = TransactionManager()
+    +    read_committed = manager.begin(IsolationLevel.READ_COMMITTED)
+    +    repeatable_read = manager.begin(IsolationLevel.REPEATABLE_READ)
+    +
+    +    rc_first = manager.statement_snapshot(read_committed)
+    +    rr_first = manager.statement_snapshot(repeatable_read)
+    +    writer = manager.begin()
+    +    assert writer.xid not in rc_first.active_xids
+    +    manager.commit(writer)
+    +
+    +    rc_second = manager.statement_snapshot(read_committed)
+    +    rr_second = manager.statement_snapshot(repeatable_read)
+    +    assert rc_second is not rc_first
+    +    assert rc_second.xmax > rc_first.xmax
+    +    assert rr_second is rr_first
+    ```
+
+**测试锁定什么**
+
+这些测试锁定本 Stage 的正常路径、边界条件、失败可见性与恢复不变量。
+
+**如何构造反例**
+
+聚焦测试让事务与快照生命周期经历正常路径、边界值、非法输入与本 Stage 可观察的失败边界。
+
+**关键测试语句**
+
+```python
+assert writer.xid not in rc_first.active_xids
+```
+
+这条断言把可观察结果与本 Stage 的状态、可见性或持久性边界绑定，而不只检查调用返回。
+
+**失败意味着什么**
+
+失败说明实现跨越了刚建立的语义、顺序、所有权或恢复边界。
+
+??? note "文件差异：tests/contract/test_transaction_commands.py"
+    ```diff
+    diff --git a/tests/contract/test_transaction_commands.py b/tests/contract/test_transaction_commands.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..55d5f4e10a7de2ed14bbcef3d94dda39dfc590ea
+    --- /dev/null
+    +++ b/tests/contract/test_transaction_commands.py
+    @@ -0,0 +1,38 @@
+    +from __future__ import annotations
+    +
+    +import pytest
+    +
+    +from minipostgres.engine import Database
+    +from minipostgres.errors import BindError, TransactionAborted
+    +
+    +
+    +def test_begin_commit_and_rollback_are_session_owned(engine: Database) -> None:
+    +    session = engine.session()
+    +    assert session.execute("BEGIN").command_tag == "BEGIN"
+    +    assert session.execute("SELECT 1").rows == ((1,),)
+    +    assert session.execute("COMMIT").command_tag == "COMMIT"
+    +    assert session.execute("BEGIN").command_tag == "BEGIN"
+    +    assert session.execute("ROLLBACK").command_tag == "ROLLBACK"
+    +
+    +
+    +def test_failed_explicit_transaction_accepts_only_rollback(
+    +    engine: Database,
+    +) -> None:
+    +    engine.execute("CREATE TABLE users (id INT)")
+    +    session = engine.session()
+    +    session.execute("BEGIN")
+    +    with pytest.raises(BindError):
+    +        session.execute("SELECT missing FROM users")
+    +    with pytest.raises(TransactionAborted):
+    +        session.execute("SELECT 1")
+    +    assert session.execute("ROLLBACK").command_tag == "ROLLBACK"
+    +
+    +
+    +def test_rejected_ddl_marks_explicit_transaction_failed(engine: Database) -> None:
+    +    session = engine.session()
+    +    session.execute("BEGIN")
+    +    with pytest.raises(BindError, match="not allowed inside a transaction"):
+    +        session.execute("CREATE TABLE forbidden (id INT)")
+    +    with pytest.raises(TransactionAborted):
+    +        session.execute("SELECT 1")
+    +    assert session.execute("ROLLBACK").command_tag == "ROLLBACK"
+    ```
+
+**测试锁定什么**
+
+这些测试锁定本 Stage 的正常路径、边界条件、失败可见性与恢复不变量。
+
+**如何构造反例**
+
+聚焦测试让事务与快照生命周期经历正常路径、边界值、非法输入与本 Stage 可观察的失败边界。
+
+**关键测试语句**
+
+```python
+assert writer.xid not in rc_first.active_xids
+```
+
+这条断言把可观察结果与本 Stage 的状态、可见性或持久性边界绑定，而不只检查调用返回。
+
+**失败意味着什么**
+
+失败说明实现跨越了刚建立的语义、顺序、所有权或恢复边界。
+
+??? note "文件差异：tests/unit/transaction/test_manager.py"
+    ```diff
+    diff --git a/tests/unit/transaction/test_manager.py b/tests/unit/transaction/test_manager.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..da296982d3c449560bd180e6058d5192a17b3fb4
+    --- /dev/null
+    +++ b/tests/unit/transaction/test_manager.py
+    @@ -0,0 +1,22 @@
+    +from minipostgres.transaction.manager import TransactionManager
+    +from minipostgres.transaction.model import IsolationLevel
+    +
+    +
+    +def test_read_committed_gets_new_snapshot_per_statement() -> None:
+    +    manager = TransactionManager()
+    +    reader = manager.begin()
+    +    writer = manager.begin()
+    +    first = manager.statement_snapshot(reader)
+    +    manager.commit(writer)
+    +    second = manager.statement_snapshot(reader)
+    +    assert writer.xid in first.active_xids
+    +    assert writer.xid not in second.active_xids
+    +
+    +
+    +def test_repeatable_read_reuses_first_snapshot() -> None:
+    +    manager = TransactionManager()
+    +    reader = manager.begin(IsolationLevel.REPEATABLE_READ)
+    +    first = manager.statement_snapshot(reader)
+    +    writer = manager.begin()
+    +    manager.commit(writer)
+    +    assert manager.statement_snapshot(reader) is first
+    ```
+
+**测试锁定什么**
+
+这些测试锁定本 Stage 的正常路径、边界条件、失败可见性与恢复不变量。
+
+**如何构造反例**
+
+聚焦测试让事务与快照生命周期经历正常路径、边界值、非法输入与本 Stage 可观察的失败边界。
+
+**关键测试语句**
+
+```python
+assert writer.xid not in rc_first.active_xids
+```
+
+这条断言把可观察结果与本 Stage 的状态、可见性或持久性边界绑定，而不只检查调用返回。
+
+**失败意味着什么**
+
+失败说明实现跨越了刚建立的语义、顺序、所有权或恢复边界。
+
+### 基本概念
+
+核心机制是事务与快照生命周期。MVCC 规则需要所有者按 Isolation Level Begin、Commit、Abort 并刷新 Snapshot。
+
+### 为什么需要这个机制
+
+MVCC 规则需要所有者按 Isolation Level Begin、Commit、Abort 并刷新 Snapshot。 若不建立明确边界，后续机制只能依赖偶然行为。
+
+### 运行时心智模型
+
+每个 Statement 使用隔离级别承诺的 Snapshot，生命周期转换只能单向进行。
+
+### 机制板块
+
+#### 事务与快照生命周期机制
+
+每个 Statement 使用隔离级别承诺的 Snapshot，生命周期转换只能单向进行。
+
+??? note "文件差异：src/minipostgres/engine.py"
+    ```diff
+    diff --git a/src/minipostgres/engine.py b/src/minipostgres/engine.py
+    index 926002e4f5480cbb4b3d0ff4a22030738b323dea..58fa40bb66ccfd2bc8365b742066ebdcd258cb66 100644
+    --- a/src/minipostgres/engine.py
+    +++ b/src/minipostgres/engine.py
+    @@ -12,7 +12,11 @@ from types import TracebackType
+     from minipostgres.catalog.catalog import Catalog
+     from minipostgres.catalog.model import Column, IndexMetadata, TableMetadata
+     from minipostgres.catalog.statistics import StatisticsStore
+    -from minipostgres.errors import BindError, ConstraintViolation, DatabaseClosed
+    +from minipostgres.errors import (
+    +    BindError,
+    +    ConstraintViolation,
+    +    DatabaseClosed,
+    +)
+     from minipostgres.executor.base import ExecutionContext, OutputSlot, collect
+     from minipostgres.executor.factory import build_executor
+     from minipostgres.executor.instrumentation import InstrumentationTracker
+    @@ -27,11 +31,14 @@ from minipostgres.row import ExecutionRow
+     from minipostgres.sql.binder import Binder
+     from minipostgres.sql.bound import (
+         BoundAnalyze,
+    +    BoundBegin,
+    +    BoundCommit,
+         BoundCreateIndex,
+         BoundCreateTable,
+         BoundDelete,
+         BoundExplain,
+         BoundInsert,
+    +    BoundRollback,
+         BoundSelect,
+         BoundStatement,
+         BoundUpdate,
+    @@ -42,6 +49,8 @@ from minipostgres.storage.disk import DiskManager, relation_path
+     from minipostgres.storage.heap import HeapTable
+     from minipostgres.storage.identifiers import btree_relation, heap_relation
+     from minipostgres.storage.indexed import IndexBinding, IndexedTableAccess
+    +from minipostgres.transaction.manager import TransactionManager
+    +from minipostgres.transaction.model import IsolationLevel, Transaction, TransactionState
+     from minipostgres.types import DataType, Scalar
+
+
+    @@ -86,8 +95,10 @@ class Database:
+             self._context = ExecutionContext(dict(self._accesses))
+             self._planner = Planner()
+             self._instrumentation_tracker = InstrumentationTracker()
+    +        self._transactions = TransactionManager()
+             self._lock = threading.RLock()
+             self._closed = False
+    +        self._default_session = DatabaseSession(self)
+
+         @classmethod
+         def open(
+    @@ -119,23 +130,93 @@ class Database:
+             return self._instrumentation_tracker
+
+         def execute(self, sql: str) -> QueryResult:
+    +        return self._default_session.execute(sql)
+    +
+    +    def session(
+    +        self,
+    +        *,
+    +        isolation: IsolationLevel = IsolationLevel.READ_COMMITTED,
+    +    ) -> DatabaseSession:
+    +        self._ensure_open()
+    +        return DatabaseSession(self, isolation=isolation)
+    +
+    +    def execute_for_session(
+    +        self,
+    +        session: DatabaseSession,
+    +        sql: str,
+    +    ) -> QueryResult:
+             with self._lock:
+                 self._ensure_open()
+    -            syntax = parse(sql)
+    -            bound = Binder(self._catalog).bind(syntax)
+    -            if isinstance(bound, BoundCreateTable):
+    -                return self._create_table(bound)
+    -            if isinstance(bound, BoundCreateIndex):
+    -                return self._create_index(bound)
+    -            if isinstance(bound, BoundAnalyze):
+    -                return self._analyze(bound)
+    -            if isinstance(bound, BoundExplain):
+    -                return self._explain(bound)
+    -            if isinstance(bound, (BoundSelect, BoundInsert, BoundUpdate, BoundDelete)):
+    -                return self._execute_relational(bound)
+    -            raise BindError(
+    -                f"{type(syntax).__name__} is reserved for a later project phase"
+    -            )
+    +            try:
+    +                syntax = parse(sql)
+    +                bound = Binder(self._catalog).bind(syntax)
+    +            except BaseException:
+    +                transaction = session.transaction
+    +                if (
+    +                    transaction is not None
+    +                    and transaction.state is TransactionState.ACTIVE
+    +                ):
+    +                    transaction.mark_failed()
+    +                raise
+    +            if isinstance(bound, BoundBegin):
+    +                if session.transaction is not None:
+    +                    raise BindError("transaction is already active")
+    +                session.transaction = self._transactions.begin(session.isolation)
+    +                return QueryResult(command_tag="BEGIN")
+    +            if isinstance(bound, BoundCommit):
+    +                transaction = session.transaction
+    +                if transaction is None:
+    +                    raise BindError("COMMIT without BEGIN")
+    +                transaction.require_usable()
+    +                self._transactions.commit(transaction)
+    +                session.transaction = None
+    +                return QueryResult(command_tag="COMMIT")
+    +            if isinstance(bound, BoundRollback):
+    +                transaction = session.transaction
+    +                if transaction is None:
+    +                    raise BindError("ROLLBACK without BEGIN")
+    +                self._transactions.abort(transaction)
+    +                session.transaction = None
+    +                return QueryResult(command_tag="ROLLBACK")
+    +            transaction = session.transaction
+    +            implicit = transaction is None
+    +            if transaction is None:
+    +                transaction = self._transactions.begin(session.isolation)
+    +            else:
+    +                transaction.require_usable()
+    +            self._transactions.statement_snapshot(transaction)
+    +            if session.transaction is not None and isinstance(
+    +                bound,
+    +                (BoundCreateTable, BoundCreateIndex, BoundAnalyze),
+    +            ):
+    +                transaction.mark_failed()
+    +                raise BindError("DDL and ANALYZE are not allowed inside a transaction")
+    +            try:
+    +                result = self._dispatch(bound, syntax)
+    +            except BaseException:
+    +                if implicit:
+    +                    self._transactions.abort(transaction)
+    +                elif transaction.state is TransactionState.ACTIVE:
+    +                    transaction.mark_failed()
+    +                raise
+    +            if implicit:
+    +                self._transactions.commit(transaction)
+    +            return result
+    +
+    +    def _dispatch(self, bound: BoundStatement, syntax: object) -> QueryResult:
+    +        if isinstance(bound, BoundCreateTable):
+    +            return self._create_table(bound)
+    +        if isinstance(bound, BoundCreateIndex):
+    +            return self._create_index(bound)
+    +        if isinstance(bound, BoundAnalyze):
+    +            return self._analyze(bound)
+    +        if isinstance(bound, BoundExplain):
+    +            return self._explain(bound)
+    +        if isinstance(bound, (BoundSelect, BoundInsert, BoundUpdate, BoundDelete)):
+    +            return self._execute_relational(bound)
+    +        raise BindError(
+    +            f"{type(syntax).__name__} is reserved for a later project phase"
+    +        )
+
+         def _explain(self, statement: BoundExplain) -> QueryResult:
+             logical = self._planner.logical(statement.statement)
+    @@ -381,3 +462,20 @@ class Database:
+             traceback: TracebackType | None,
+         ) -> None:
+             self.close()
+    +
+    +
+    +class DatabaseSession:
+    +    """One client-visible explicit transaction owner."""
+    +
+    +    def __init__(
+    +        self,
+    +        database: Database,
+    +        *,
+    +        isolation: IsolationLevel = IsolationLevel.READ_COMMITTED,
+    +    ) -> None:
+    +        self._database = database
+    +        self.isolation = isolation
+    +        self.transaction: Transaction | None = None
+    +
+    +    def execute(self, sql: str) -> QueryResult:
+    +        return self._database.execute_for_session(self, sql)
+    ```
+
+??? note "文件差异：src/minipostgres/transaction/manager.py"
+    ```diff
+    diff --git a/src/minipostgres/transaction/manager.py b/src/minipostgres/transaction/manager.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..f86afac47ccd3458da382d50d68d8f19c746d4b1
+    --- /dev/null
+    +++ b/src/minipostgres/transaction/manager.py
+    @@ -0,0 +1,69 @@
+    +from __future__ import annotations
+    +
+    +import threading
+    +
+    +from minipostgres.transaction.model import (
+    +    IsolationLevel,
+    +    Transaction,
+    +    TransactionState,
+    +)
+    +from minipostgres.transaction.snapshot import Snapshot
+    +from minipostgres.transaction.status import TransactionStatus, TransactionStatusTable
+    +
+    +
+    +class TransactionManager:
+    +    def __init__(self, *, next_xid: int = 2) -> None:
+    +        self._next_xid = next_xid
+    +        self._active: dict[int, Transaction] = {}
+    +        self.statuses = TransactionStatusTable()
+    +        self._lock = threading.RLock()
+    +
+    +    @property
+    +    def next_xid(self) -> int:
+    +        with self._lock:
+    +            return self._next_xid
+    +
+    +    def begin(
+    +        self,
+    +        isolation: IsolationLevel = IsolationLevel.READ_COMMITTED,
+    +    ) -> Transaction:
+    +        with self._lock:
+    +            transaction = Transaction(self._next_xid, isolation)
+    +            self._next_xid += 1
+    +            self._active[transaction.xid] = transaction
+    +            return transaction
+    +
+    +    def statement_snapshot(self, transaction: Transaction) -> Snapshot:
+    +        with self._lock:
+    +            transaction.require_usable()
+    +            if (
+    +                transaction.isolation is IsolationLevel.REPEATABLE_READ
+    +                and transaction.repeatable_snapshot is not None
+    +            ):
+    +                return transaction.repeatable_snapshot
+    +            snapshot = Snapshot(
+    +                self._next_xid,
+    +                frozenset(
+    +                    xid for xid in self._active if xid != transaction.xid
+    +                ),
+    +            )
+    +            if transaction.isolation is IsolationLevel.REPEATABLE_READ:
+    +                transaction.repeatable_snapshot = snapshot
+    +            return snapshot
+    +
+    +    def commit(self, transaction: Transaction) -> None:
+    +        with self._lock:
+    +            transaction.mark_committed()
+    +            self.statuses.set(transaction.xid, TransactionStatus.COMMITTED)
+    +            self._active.pop(transaction.xid, None)
+    +
+    +    def abort(self, transaction: Transaction) -> None:
+    +        with self._lock:
+    +            if transaction.state is not TransactionState.ABORTED:
+    +                transaction.mark_aborted()
+    +            self.statuses.set(transaction.xid, TransactionStatus.ABORTED)
+    +            self._active.pop(transaction.xid, None)
+    +
+    +    def active_transactions(self) -> tuple[Transaction, ...]:
+    +        with self._lock:
+    +            return tuple(self._active.values())
+    ```
+
+??? note "文件差异：src/minipostgres/transaction/model.py"
+    ```diff
+    diff --git a/src/minipostgres/transaction/model.py b/src/minipostgres/transaction/model.py
+    index a511f6d2e4021309c3ef33e45b95f62e108ae1ff..80b106edf2bcb404b7c32c3b4d6313c4b164e1e7 100644
+    --- a/src/minipostgres/transaction/model.py
+    +++ b/src/minipostgres/transaction/model.py
+    @@ -5,6 +5,7 @@ from dataclasses import dataclass, field
+     from enum import Enum
+
+     from minipostgres.errors import TransactionAborted
+    +from minipostgres.transaction.snapshot import Snapshot
+
+
+     class IsolationLevel(Enum):
+    @@ -24,7 +25,7 @@ class Transaction:
+         xid: int
+         isolation: IsolationLevel
+         state: TransactionState = TransactionState.ACTIVE
+    -    repeatable_snapshot: object | None = None
+    +    repeatable_snapshot: Snapshot | None = None
+         has_writes: bool = False
+         resources: set[object] = field(default_factory=lambda: set[object]())
+         _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    ```
+
+**是什么，为什么现在需要**
+
+核心机制是事务与快照生命周期。MVCC 规则需要所有者按 Isolation Level Begin、Commit、Abort 并刷新 Snapshot。
+
+**在运行时做什么**
+
+每个 Statement 使用隔离级别承诺的 Snapshot，生命周期转换只能单向进行。
+
+**关键语句理解**
+
+真正要守住的边界是：每个 Statement 使用隔离级别承诺的 Snapshot，生命周期转换只能单向进行。
+
+#### 包、Fixture 与工程支撑
+
+保持包导出、测试语料、依赖与运行环境可复现。
+
+??? note "支撑文件差异（3 个文件）"
+    **`ARCHITECTURE.md`**
+
+    ```diff
+    diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+    index 3067a3d772306fbebc5bade8eb7ebe8a43ba957b..022cb15743df992cd408ff31cd06a325b24192bf 100644
+    --- a/ARCHITECTURE.md
+    +++ b/ARCHITECTURE.md
+    @@ -46,6 +46,26 @@ and equi-depth histogram bounds. Selectivity is always clamped to `[0, 1]`;
+     missing statistics use stable defaults. Costs are relative work units, not
+     milliseconds. Stale statistics may produce a poor plan but cannot change rows.
+
+    +The missing-table defaults are 1,000 rows and 10 pages; they permit planning
+    +but not index selection. Unsupported predicate shapes use selectivity `1/3`.
+    +Equality first checks MCVs and then divides residual non-null mass by residual
+    +distinct count. Ranges combine matching MCV mass with histogram interpolation;
+    +`NOT`, `AND`, and `OR` use complement and independence formulas.
+    +
+    +The frozen relative constants are:
+    +
+    +```text
+    +sequential page = 1.0
+    +random page     = 4.0
+    +CPU tuple       = 0.01
+    +CPU operator    = 0.0025
+    +```
+    +
+    +Ties prefer SeqScan and NestedLoop. HashJoin extracts one cross-input equality
+    +key, builds the estimated smaller side, and evaluates the complete ON
+    +predicate as a residual. Join-memo ties then use stable relation IDs and node
+    +kind.
+    +
+     ## Executor ownership
+
+     Every executor follows:
+    ```
+
+    **`BEHAVIORAL_CONTRACT.md`**
+
+    ```diff
+    diff --git a/BEHAVIORAL_CONTRACT.md b/BEHAVIORAL_CONTRACT.md
+    index 092bca9f66d488e37c33f4e1b8580ff79a8c1ec9..e6dc259f319a593bda64171f5b8cebe1f4128746 100644
+    --- a/BEHAVIORAL_CONTRACT.md
+    +++ b/BEHAVIORAL_CONTRACT.md
+    @@ -46,11 +46,18 @@
+     ## Statistics and planning
+
+     - `ANALYZE` publishes one complete immutable table-statistics snapshot;
+    +- statistics survive restart and remain unchanged after DML until another
+    +  `ANALYZE`;
+     - MCV ordering and equi-depth histogram construction are deterministic;
+     - every selectivity estimate is a probability and missing statistics do not
+       make planning fail;
+    +- an unsupported predicate shape uses selectivity `1/3`;
+    +- equality uses MCV frequency or residual mass per residual distinct value;
+    +- range estimates combine matching MCVs and histogram interpolation;
+    +- `NOT`, `AND`, and `OR` use the frozen complement/independence formulas;
+     - cost values are relative units and are never wall-clock predictions;
+     - a sequential scan wins deterministic cost ties;
+    +- a nested-loop join wins deterministic join-cost ties;
+     - an index scan treats index entries as candidates and rechecks the full
+       predicate against the fetched heap tuple;
+     - hash joins retain duplicate multiplicity and residual ON predicates;
+    @@ -106,11 +113,10 @@
+     | Volcano operator behavior | `tests/unit/executor/test_query_operators.py` |
+     | validated modifications | `tests/unit/executor/test_modify_operators.py` |
+     | public SQL loop | `tests/integration/test_query_loop.py` |
+    -| structured EXPLAIN and cleanup | `tests/contract/test_explain.py`, `tests/integration/test_executor_cleanup.py` |
+    +| structured EXPLAIN and cleanup | `tests/contract/test_explain.py`, `tests/contract/test_explain_analyze.py`, `tests/integration/test_executor_cleanup.py`, `tests/integration/test_instrumentation_cleanup.py` |
+     | statistics and selectivity | `tests/contract/test_analyze.py`, `tests/unit/planner/test_selectivity.py`, `tests/property/test_selectivity_bounds.py` |
+     | scan and join choices | `tests/unit/planner/test_scan_choice.py`, `tests/unit/planner/test_join_choice.py`, `tests/unit/planner/test_join_order.py` |
+     | optimized-result semantics | `tests/integration/test_optimizer_results.py`, `tests/property/test_join_order_equivalence.py` |
+    -| per-node instrumentation | `tests/contract/test_explain_analyze.py`, `tests/integration/test_instrumentation_cleanup.py` |
+     | Phase A closure | `tests/acceptance/test_phase_a.py` |
+     | Phase B closure | `tests/acceptance/test_phase_b.py` |
+     | Phase C closure | `tests/acceptance/test_phase_c.py` |
+    ```
+
+    **`DIFFERENCES_FROM_POSTGRESQL.md`**
+
+    ```diff
+    diff --git a/DIFFERENCES_FROM_POSTGRESQL.md b/DIFFERENCES_FROM_POSTGRESQL.md
+    index 036e523c7090c8d5c10d96a6c34a7e350d50b461..e43697ea8d471eba231d255220e65744939f3f62 100644
+    --- a/DIFFERENCES_FROM_POSTGRESQL.md
+    +++ b/DIFFERENCES_FROM_POSTGRESQL.md
+    @@ -41,11 +41,15 @@ differs in product scope and implementation.
+
+     ## Transactions and maintenance
+
+    -Phase B statements are serialized inside one process. Unique checks are
+    +Phase C statements are serialized inside one process. Unique checks are
+     statement-local and do not model PostgreSQL's speculative insertion,
+     deferrable constraints, composite table constraints, NULL uniqueness options,
+     or concurrent index build.
+
+    +Statistics change only through explicit `ANALYZE`; there are no automatic
+    +analyze thresholds, extended statistics, bitmap/index-only paths, or
+    +PostgreSQL planner configuration surface.
+    +
+     Transactions, MVCC, locks, WAL recovery, Vacuum, and HOT are accepted later
+     phases. Their goal is to expose PostgreSQL-shaped invariants, not reproduce
+     every lock mode, isolation anomaly, WAL record, pruning optimization, or
+    ```
+
+
+### 验证证据
+
+运行 `uv run pytest -q $(cat journey/stages/19-snapshot-lifecycle/tests.txt)`，再用 Journey Check 比较累计源码与标准 Stage。
+
+### 需要真正记住的内容
+
+真正要守住的边界是：每个 Statement 使用隔离级别承诺的 Snapshot，生命周期转换只能单向进行。
+
+### 用自己的话讲清楚
+
+请解释这个 Stage 关闭的失败窗口、运行时状态如何变化，以及哪条语句守住边界。
+
+### 教材
+
+[第 8 章](https://github.com/system-in-miniature/mini-postgres/blob/main/docs/zh/tutorial/08-isolation.md)
+
+[Complete reference patch / 完整参考补丁](https://github.com/system-in-miniature/mini-postgres/blob/main/journey/stages/19-snapshot-lifecycle/stage.patch)

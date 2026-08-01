@@ -1,0 +1,74 @@
+diff --git a/src/minipostgres/sql/binder.py b/src/minipostgres/sql/binder.py
+index 11139a67f54927b13cd006cf757d7837f74b5496..bb790d3dfee346920db92ef427c91e8250959d20 100644
+--- a/src/minipostgres/sql/binder.py
++++ b/src/minipostgres/sql/binder.py
+@@ -140,6 +140,11 @@ class Binder:
+         alias = reference.alias or reference.name
+         normalized_names = {alias.casefold()}
+         for entry in self._scope:
++            if entry.table.metadata.table_id == metadata.table_id:
++                raise BindError(
++                    "self-joins are not supported because relation aliases "
++                    "do not yet have distinct runtime identities"
++                )
+             if entry.visible_names & normalized_names:
+                 raise BindError(f"duplicate table or alias: {alias}")
+         table = BoundTable(metadata, alias)
+diff --git a/tests/acceptance/test_phase_e.py b/tests/acceptance/test_phase_e.py
+index 4085286d6ee77b804d60ef4cf7a66790cdecd985..9c80472ed6b3721698602f521dabe1c64976788c 100644
+--- a/tests/acceptance/test_phase_e.py
++++ b/tests/acceptance/test_phase_e.py
+@@ -21,7 +21,8 @@ def test_phase_e_vacuum_hot_and_restart_closure(tmp_path: Path) -> None:
+         access = database._accesses[1]
+         key = KeyCodec((DataType.INT64,)).encode((1,))
+         root_tid = access.indexes[0].tree.search(key)[0]
+-        database.execute("UPDATE users SET age = 21 WHERE id = 1")
++        for age in (21, 22, 23):
++            database.execute(f"UPDATE users SET age = {age} WHERE id = 1")
+         assert access.indexes[0].tree.search(key) == (root_tid,)
+         assert reader.execute("SELECT age FROM users WHERE id = 1").rows == (
+             (20,),
+@@ -36,10 +37,10 @@ def test_phase_e_vacuum_hot_and_restart_closure(tmp_path: Path) -> None:
+         assert maintenance is not None
+         assert maintenance.hot_versions_pruned >= 1
+         assert database.execute("SELECT age FROM users WHERE id = 1").rows == (
+-            (21,),
++            (23,),
+         )
+ 
+     with Database.open(tmp_path) as reopened:
+         assert reopened.execute(
+             "SELECT id, age, name FROM users WHERE id = 1"
+-        ).rows == ((1, 21, "alice"),)
++        ).rows == ((1, 23, "alice"),)
+diff --git a/tests/contract/test_self_join_scope.py b/tests/contract/test_self_join_scope.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9a19c204934a7abaf2f8a182bdab73a4f5e1b8ee
+--- /dev/null
++++ b/tests/contract/test_self_join_scope.py
+@@ -0,0 +1,25 @@
++from pathlib import Path
++
++import pytest
++
++from minipostgres.engine import Database
++from minipostgres.errors import BindError
++
++
++def test_self_join_is_rejected_until_relation_instances_have_distinct_ids(
++    tmp_path: Path,
++) -> None:
++    with Database.open(tmp_path) as database:
++        database.execute("CREATE TABLE users (id INT PRIMARY KEY)")
++
++        with pytest.raises(
++            BindError,
++            match="self-joins are not supported",
++        ):
++            database.execute(
++                "SELECT left_user.id "
++                "FROM users AS left_user "
++                "JOIN users AS right_user "
++                "ON left_user.id = right_user.id"
++            )
++

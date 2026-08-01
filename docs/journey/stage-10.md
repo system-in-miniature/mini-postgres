@@ -1,0 +1,400 @@
+# Stage 10 · Explain and executor cleanup
+
+### Goal
+
+Build explain and executor cleanup and explain its boundary from an executable counterexample, runtime state, and the critical statement.
+
+??? note "Deliverable files"
+    - `src/minipostgres/engine.py`
+    - `src/minipostgres/executor/base.py`
+    - `src/minipostgres/planner/physical.py`
+    - `tests/contract/test_explain.py`
+    - `tests/integration/test_executor_cleanup.py`
+
+### The problem at this point
+
+Learners need observable plan shape, and failed execution must not leak open operators.
+
+### Test contract
+
+#### See the failure first
+
+The focused tests force explain and executor cleanup through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
+
+??? note "File diff: tests/contract/test_explain.py"
+    ```diff
+    diff --git a/tests/contract/test_explain.py b/tests/contract/test_explain.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..4bffff04ea842c2b27ff26deed0530a37b1f7cbc
+    --- /dev/null
+    +++ b/tests/contract/test_explain.py
+    @@ -0,0 +1,33 @@
+    +from __future__ import annotations
+    +
+    +from minipostgres.engine import Database
+    +
+    +
+    +def test_explain_returns_structured_plan_without_executing(
+    +    engine: Database,
+    +) -> None:
+    +    engine.execute("CREATE TABLE users (id INT)")
+    +    engine.execute("INSERT INTO users VALUES (1)")
+    +
+    +    result = engine.execute("EXPLAIN DELETE FROM users")
+    +
+    +    assert result.plan is not None
+    +    assert result.plan.node_type == "ModifyTable"
+    +    assert result.plan.children[0].node_type == "SeqScan"
+    +    assert result.plan.actual_rows is None
+    +    assert engine.execute("SELECT COUNT(*) FROM users").rows == ((1,),)
+    +
+    +
+    +def test_explain_analyze_executes_and_reports_root_actual_rows(
+    +    engine: Database,
+    +) -> None:
+    +    engine.execute("CREATE TABLE users (id INT)")
+    +    engine.execute("INSERT INTO users VALUES (1), (2)")
+    +
+    +    result = engine.execute("EXPLAIN ANALYZE SELECT id FROM users")
+    +
+    +    assert result.plan is not None
+    +    assert result.plan.node_type == "Project"
+    +    assert result.plan.actual_rows == 2
+    +    assert result.plan.elapsed_ms is not None
+    +    assert result.plan.elapsed_ms >= 0
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The focused tests force explain and executor cleanup through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
+
+**Key test statement**
+
+```python
+assert result.plan is not None
+```
+
+This assertion binds the observable result to the Stage's state, visibility, or durability boundary rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the semantic, ordering, ownership, or recovery boundary just introduced.
+
+??? note "File diff: tests/integration/test_executor_cleanup.py"
+    ```diff
+    diff --git a/tests/integration/test_executor_cleanup.py b/tests/integration/test_executor_cleanup.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..e1bbe0d8ad518f0ecb0913d54ce711a9a2b70d49
+    --- /dev/null
+    +++ b/tests/integration/test_executor_cleanup.py
+    @@ -0,0 +1,64 @@
+    +from __future__ import annotations
+    +
+    +import pytest
+    +
+    +import minipostgres.engine as engine_module
+    +from minipostgres.engine import Database
+    +from minipostgres.errors import TypeMismatch
+    +from minipostgres.executor.base import Executor
+    +from minipostgres.row import ExecutionRow
+    +
+    +
+    +class _FailingExecutor(Executor):
+    +    def __init__(self) -> None:
+    +        super().__init__()
+    +        self.close_calls = 0
+    +
+    +    def _next(self) -> ExecutionRow | None:
+    +        raise TypeMismatch("injected expression failure")
+    +
+    +    def _close(self) -> None:
+    +        self.close_calls += 1
+    +
+    +
+    +def test_engine_closes_executor_after_evaluation_error(
+    +    engine: Database,
+    +    monkeypatch: pytest.MonkeyPatch,
+    +) -> None:
+    +    failing = _FailingExecutor()
+    +    monkeypatch.setattr(
+    +        engine_module,
+    +        "build_executor",
+    +        lambda plan, context: failing,
+    +    )
+    +
+    +    with pytest.raises(TypeMismatch, match="injected"):
+    +        engine.execute("SELECT 1")
+    +
+    +    assert failing.closed
+    +    assert failing.close_calls == 1
+    +
+    +
+    +class _OpenFailureExecutor(Executor):
+    +    def __init__(self) -> None:
+    +        super().__init__()
+    +        self.cleanup_calls = 0
+    +
+    +    def _open(self) -> None:
+    +        raise RuntimeError("open failed")
+    +
+    +    def _next(self) -> ExecutionRow | None:
+    +        return None
+    +
+    +    def _close(self) -> None:
+    +        self.cleanup_calls += 1
+    +
+    +
+    +def test_open_failure_runs_executor_cleanup() -> None:
+    +    executor = _OpenFailureExecutor()
+    +
+    +    with pytest.raises(RuntimeError, match="open failed"):
+    +        executor.open()
+    +
+    +    assert executor.closed
+    +    assert executor.cleanup_calls == 1
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The focused tests force explain and executor cleanup through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
+
+**Key test statement**
+
+```python
+assert result.plan is not None
+```
+
+This assertion binds the observable result to the Stage's state, visibility, or durability boundary rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the semantic, ordering, ownership, or recovery boundary just introduced.
+
+### Basic concepts
+
+The central mechanism is explain and executor cleanup. Learners need observable plan shape, and failed execution must not leak open operators.
+
+### Why this mechanism is necessary
+
+Learners need observable plan shape, and failed execution must not leak open operators. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+
+### Runtime mental model
+
+Explain reports the selected tree while every success or failure path closes owned resources.
+
+### Mechanism blocks
+
+#### Explain and executor cleanup mechanism
+
+Explain reports the selected tree while every success or failure path closes owned resources.
+
+??? note "File diff: src/minipostgres/engine.py"
+    ```diff
+    diff --git a/src/minipostgres/engine.py b/src/minipostgres/engine.py
+    index f18a88f3840c510f67b157a295504a93950d9d42..065b1176e7c5dd18db01271d04d7571757b15ad0 100644
+    --- a/src/minipostgres/engine.py
+    +++ b/src/minipostgres/engine.py
+    @@ -5,6 +5,7 @@ from __future__ import annotations
+     import threading
+     from dataclasses import dataclass
+     from pathlib import Path
+    +from time import perf_counter
+     from types import TracebackType
+
+     from minipostgres.catalog.catalog import Catalog
+    @@ -13,11 +14,13 @@ from minipostgres.errors import BindError, DatabaseClosed
+     from minipostgres.executor.base import ExecutionContext, OutputSlot, collect
+     from minipostgres.executor.factory import build_executor
+     from minipostgres.executor.memory import MemoryTable
+    +from minipostgres.planner.physical import PlanExplanation, explain_plan
+     from minipostgres.planner.planner import Planner
+     from minipostgres.sql.binder import Binder
+     from minipostgres.sql.bound import (
+         BoundCreateTable,
+         BoundDelete,
+    +    BoundExplain,
+         BoundInsert,
+         BoundSelect,
+         BoundStatement,
+    @@ -34,6 +37,7 @@ class QueryResult:
+         columns: tuple[str, ...] = ()
+         rows: tuple[tuple[Scalar, ...], ...] = ()
+         command_tag: str = ""
+    +    plan: PlanExplanation | None = None
+
+
+     class Database:
+    @@ -69,12 +73,34 @@ class Database:
+                 bound = Binder(self._catalog).bind(syntax)
+                 if isinstance(bound, BoundCreateTable):
+                     return self._create_table(bound)
+    +            if isinstance(bound, BoundExplain):
+    +                return self._explain(bound)
+                 if isinstance(bound, (BoundSelect, BoundInsert, BoundUpdate, BoundDelete)):
+                     return self._execute_relational(bound)
+                 raise BindError(
+                     f"{type(syntax).__name__} is reserved for a later project phase"
+                 )
+
+    +    def _explain(self, statement: BoundExplain) -> QueryResult:
+    +        logical = self._planner.logical(statement.statement)
+    +        physical = self._planner.physical(logical)
+    +        if not statement.analyze:
+    +            return QueryResult(
+    +                command_tag="EXPLAIN",
+    +                plan=explain_plan(physical),
+    +            )
+    +        started = perf_counter()
+    +        rows = collect(build_executor(physical, self._context))
+    +        elapsed_ms = (perf_counter() - started) * 1_000
+    +        return QueryResult(
+    +            command_tag="EXPLAIN ANALYZE",
+    +            plan=explain_plan(
+    +                physical,
+    +                actual_rows=len(rows),
+    +                elapsed_ms=elapsed_ms,
+    +            ),
+    +        )
+    +
+         def _create_table(self, statement: BoundCreateTable) -> QueryResult:
+             columns = tuple(
+                 Column(
+    ```
+
+??? note "File diff: src/minipostgres/executor/base.py"
+    ```diff
+    diff --git a/src/minipostgres/executor/base.py b/src/minipostgres/executor/base.py
+    index 08b0228bcd859832d0dc01d69f4f740da1cdc68f..2a347b7c987cc21fddc196b6f5c2652a4f791525 100644
+    --- a/src/minipostgres/executor/base.py
+    +++ b/src/minipostgres/executor/base.py
+    @@ -57,7 +57,14 @@ class Executor(ABC):
+                 return
+             if self._closed:
+                 raise RuntimeError("cannot reopen a closed executor")
+    -        self._open()
+    +        try:
+    +            self._open()
+    +        except BaseException:
+    +            try:
+    +                self._close()
+    +            finally:
+    +                self._closed = True
+    +            raise
+             self._opened = True
+
+         def next(self) -> ExecutionRow | None:
+    ```
+
+??? note "File diff: src/minipostgres/planner/physical.py"
+    ```diff
+    diff --git a/src/minipostgres/planner/physical.py b/src/minipostgres/planner/physical.py
+    index 73eb562679c6fc176fce5fff40a123ceba2dcff0..5c88df4f9ecca02fc5ca41128116d2661f723a67 100644
+    --- a/src/minipostgres/planner/physical.py
+    +++ b/src/minipostgres/planner/physical.py
+    @@ -23,6 +23,19 @@ class PhysicalPlan:
+         estimated_cost: float | None = None
+
+
+    +@dataclass(frozen=True, slots=True)
+    +class PlanExplanation:
+    +    """Stable, structured representation of one physical plan node."""
+    +
+    +    node_type: str
+    +    details: tuple[tuple[str, str], ...] = ()
+    +    estimated_rows: float | None = None
+    +    estimated_cost: float | None = None
+    +    actual_rows: int | None = None
+    +    elapsed_ms: float | None = None
+    +    children: tuple[PlanExplanation, ...] = ()
+    +
+    +
+     @dataclass(frozen=True, slots=True)
+     class PhysicalValues(PhysicalPlan):
+         rows: tuple[tuple[BoundExpr, ...], ...]
+    @@ -94,3 +107,47 @@ class PhysicalModifyTable(PhysicalPlan):
+         child: PhysicalPlan
+         target_columns: tuple[Column, ...] = ()
+         assignments: tuple[BoundAssignment, ...] = ()
+    +
+    +
+    +def explain_plan(
+    +    plan: PhysicalPlan,
+    +    *,
+    +    actual_rows: int | None = None,
+    +    elapsed_ms: float | None = None,
+    +) -> PlanExplanation:
+    +    """Describe a physical tree without relying on formatted planner text."""
+    +
+    +    node_type = type(plan).__name__.removeprefix("Physical")
+    +    details: list[tuple[str, str]] = []
+    +    children: tuple[PhysicalPlan, ...] = ()
+    +    if isinstance(plan, (PhysicalSeqScan, PhysicalIndexScan)):
+    +        details.append(("table", plan.table.metadata.name))
+    +    if isinstance(plan, PhysicalIndexScan):
+    +        details.append(("index_id", str(plan.index_id)))
+    +    if isinstance(plan, PhysicalLimit):
+    +        details.append(("limit", str(plan.limit)))
+    +        children = (plan.child,)
+    +    elif isinstance(
+    +        plan,
+    +        (PhysicalFilter, PhysicalProject, PhysicalAggregate, PhysicalSort),
+    +    ):
+    +        children = (plan.child,)
+    +    elif isinstance(plan, (PhysicalNestedLoopJoin, PhysicalHashJoin)):
+    +        children = (plan.left, plan.right)
+    +    elif isinstance(plan, PhysicalModifyTable):
+    +        details.extend(
+    +            (
+    +                ("operation", plan.operation),
+    +                ("table", plan.table.name),
+    +            )
+    +        )
+    +        children = (plan.child,)
+    +    return PlanExplanation(
+    +        node_type=node_type,
+    +        details=tuple(details),
+    +        estimated_rows=plan.estimated_rows,
+    +        estimated_cost=plan.estimated_cost,
+    +        actual_rows=actual_rows,
+    +        elapsed_ms=elapsed_ms,
+    +        children=tuple(explain_plan(child) for child in children),
+    +    )
+    ```
+
+**What it is and why it appears**
+
+The central mechanism is explain and executor cleanup. Learners need observable plan shape, and failed execution must not leak open operators.
+
+**Runtime role**
+
+Explain reports the selected tree while every success or failure path closes owned resources.
+
+**Statement understanding**
+
+The durable boundary is this: explain reports the selected tree while every success or failure path closes owned resources.
+
+### Verification evidence
+
+Run `uv run pytest -q $(cat journey/stages/10-explain-cleanup/tests.txt)`, then use Journey Check to compare the cumulative source with the canonical Stage.
+
+### Durable takeaways
+
+The durable boundary is this: explain reports the selected tree while every success or failure path closes owned resources.
+
+### Explain it in your own words
+
+Explain the failure window this Stage closes, how runtime state changes, and which statement protects the boundary.
+
+### Textbook
+
+[Chapter 7](https://github.com/system-in-miniature/mini-postgres/blob/main/docs/tutorial/07-execution.md)
+
+[Complete reference patch / 完整参考补丁](https://github.com/system-in-miniature/mini-postgres/blob/main/journey/stages/10-explain-cleanup/stage.patch)

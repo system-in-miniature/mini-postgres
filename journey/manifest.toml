@@ -1,0 +1,218 @@
+[project]
+name = "MiniPostgres"
+package = "minipostgres"
+repository_url = "https://github.com/system-in-miniature/mini-postgres"
+base = "a05f609"
+owned_roots = ["src/minipostgres", "tests"]
+owned_files = [
+  "pyproject.toml",
+  "uv.lock",
+  "README.md",
+  "SCOPE.md",
+  "ARCHITECTURE.md",
+  "BEHAVIORAL_CONTRACT.md",
+  "DIFFERENCES_FROM_POSTGRESQL.md",
+  "BEHAVIOR_MATRIX.md",
+]
+excluded_files = ["tests/test_docs_homepage.py"]
+
+[[stages]]
+number = 1
+slug = "value-row-contract"
+chapter = 1
+source = "c2e1dde"
+
+[[stages]]
+number = 2
+slug = "typed-catalog"
+chapter = 1
+source = "90041c4"
+
+[[stages]]
+number = 3
+slug = "sql-lexer"
+chapter = 2
+source = "a3028ea"
+
+[[stages]]
+number = 4
+slug = "sql-parser"
+chapter = 2
+source = "3187023"
+
+[[stages]]
+number = 5
+slug = "sql-binder"
+chapter = 2
+source = "a435f96"
+
+[[stages]]
+number = 6
+slug = "logical-physical-plans"
+chapter = 6
+source = "ad1ee58"
+
+[[stages]]
+number = 7
+slug = "memory-table-access"
+chapter = 7
+source = "b12ec4b"
+
+[[stages]]
+number = 8
+slug = "volcano-execution"
+chapter = 7
+source = "cadccad"
+
+[[stages]]
+number = 9
+slug = "sql-query-loop"
+chapter = 7
+source = "52fc760"
+
+[[stages]]
+number = 10
+slug = "explain-cleanup"
+chapter = 7
+source = "0d3a079"
+
+[[stages]]
+number = 11
+slug = "checksummed-pages"
+chapter = 3
+source = "717fb61"
+
+[[stages]]
+number = 12
+slug = "persistent-heap"
+chapter = 3
+source = "79762ea"
+
+[[stages]]
+number = 13
+slug = "btree-core"
+chapter = 5
+source = "ff07402"
+
+[[stages]]
+number = 14
+slug = "published-indexes"
+chapter = 5
+source = "8cfd985"
+
+[[stages]]
+number = 15
+slug = "statistics-analyze"
+chapter = 6
+source = "e7f4a07"
+
+[[stages]]
+number = 16
+slug = "costed-rewrites"
+chapter = 6
+source = "6bcab76"
+
+[[stages]]
+number = 17
+slug = "optimizer-instrumentation"
+chapter = 6
+source = "8009636"
+
+[[stages]]
+number = 18
+slug = "mvcc-state-model"
+chapter = 4
+source = "6b2ad97"
+
+[[stages]]
+number = 19
+slug = "snapshot-lifecycle"
+chapter = 8
+source = "34acecb"
+
+[[stages]]
+number = 20
+slug = "versioned-heap"
+chapter = 4
+source = "2ccec53"
+
+[[stages]]
+number = 21
+slug = "locks-deadlocks"
+chapter = 9
+source = "8896c3e"
+
+[[stages]]
+number = 22
+slug = "wal-records"
+chapter = 10
+source = "15a9915"
+
+[[stages]]
+number = 23
+slug = "recovery-deadlock"
+chapter = 10
+source = "f90d4b2"
+tests = [
+  "tests/concurrency/test_unique_conflicts.py",
+  "tests/concurrency/test_write_conflicts.py",
+  "tests/unit/wal/test_control_file.py",
+  "tests/unit/wal/test_recovery.py",
+]
+
+[[stages]]
+number = 24
+slug = "checkpoint-durability"
+chapter = 10
+source = "50c1cdd"
+
+[[stages]]
+number = 25
+slug = "wal-durability-horizon"
+chapter = 11
+source = "a815d4b"
+
+[[stages]]
+number = 26
+slug = "vacuum-hot-crash"
+chapter = 12
+source = "c80c128"
+
+[[stages]]
+number = 27
+slug = "maintenance-domain-closure"
+chapter = 11
+source = "c4d9186"
+tests = [
+  "tests/acceptance/test_behavior_matrix.py",
+  "tests/concurrency/test_hot_visibility.py",
+  "tests/integration/test_hot_fallback.py",
+  "tests/integration/test_hot_pruning.py",
+  "tests/integration/test_vacuum_metadata.py",
+  "tests/property/test_vacuum_idempotence.py",
+  "tests/reliability/test_vacuum_recovery.py",
+]
+
+[[stages]]
+number = 28
+slug = "self-join-scope"
+chapter = 2
+source = "5a2fdd9"
+tests = ["tests/contract/test_self_join_scope.py"]
+
+[[stages]]
+number = 29
+slug = "correctness-regressions"
+chapter = 12
+source = "d1c7d6e"
+tests = [
+  "tests/unit/executor/test_expressions.py",
+  "tests/unit/executor/test_query_operators.py",
+  "tests/unit/sql/test_binder_names.py",
+]
+
+[[stages]]
+number = 30
+slug = "hot-audit-closure"
+chapter = 11
+source = "HEAD"

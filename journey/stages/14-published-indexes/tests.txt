@@ -1,0 +1,5 @@
+tests/contract/test_schema_unique_constraints.py
+tests/contract/test_unique_index.py
+tests/integration/test_create_index.py
+tests/integration/test_engine_heap_restart.py
+tests/integration/test_query_loop.py

@@ -16,6 +16,9 @@ theme:
     - navigation.top
     - content.code.copy
 
+extra_javascript:
+  - assets/javascripts/language-switch.js
+
 nav:
   - Home: index.md
   - English:
@@ -33,6 +36,40 @@ nav:
           - "10 · WAL and Recovery": tutorial/10-wal-recovery.md
           - "11 · VACUUM and HOT": tutorial/11-vacuum-hot.md
           - "12 · Testing Methodology": tutorial/12-testing-methodology.md
+      - Self-Guided Rebuild:
+          - "Build MiniPostgres yourself": journey/index.md
+          - "01 · Value and row contract": journey/stage-01.md
+          - "02 · Durable typed catalog": journey/stage-02.md
+          - "03 · Frozen SQL lexer": journey/stage-03.md
+          - "04 · Precedence-aware SQL parser": journey/stage-04.md
+          - "05 · Name and type binding": journey/stage-05.md
+          - "06 · Logical and physical plans": journey/stage-06.md
+          - "07 · Reference memory table": journey/stage-07.md
+          - "08 · Volcano iterator execution": journey/stage-08.md
+          - "09 · Validated DML query loop": journey/stage-09.md
+          - "10 · Explain and executor cleanup": journey/stage-10.md
+          - "11 · Checksummed storage pages": journey/stage-11.md
+          - "12 · Persistent heap files": journey/stage-12.md
+          - "13 · Persistent BTree core": journey/stage-13.md
+          - "14 · Published table indexes": journey/stage-14.md
+          - "15 · Statistics and ANALYZE": journey/stage-15.md
+          - "16 · Costed logical rewrites": journey/stage-16.md
+          - "17 · Optimizer and instrumentation": journey/stage-17.md
+          - "18 · MVCC state model": journey/stage-18.md
+          - "19 · Transaction and snapshot lifecycle": journey/stage-19.md
+          - "20 · Versioned heap visibility": journey/stage-20.md
+          - "21 · Writer locks and deadlocks": journey/stage-21.md
+          - "22 · Checksummed WAL records": journey/stage-22.md
+          - "23 · Recovery and deadlock victims": journey/stage-23.md
+          - "24 · Sharp checkpoint durability": journey/stage-24.md
+          - "25 · WAL durability and cleanup horizon": journey/stage-25.md
+          - "26 · Vacuum, HOT, and crash matrix": journey/stage-26.md
+          - "27 · Maintenance domain closure": journey/stage-27.md
+          - "28 · Self-join scope rejection": journey/stage-28.md
+          - "29 · Cross-layer correctness regressions": journey/stage-29.md
+          - "30 · HOT audit closure": journey/stage-30.md
+      - Agent-Guided Rebuild:
+          - "CLI usage": agent-guide.md
       - Reference:
           - "Architecture Tour": tour.md
           - "PostgreSQL Mapping": postgresql-mapping.md
@@ -59,6 +96,40 @@ nav:
           - "10 · WAL 与恢复": zh/tutorial/10-wal-recovery.md
           - "11 · VACUUM 与 HOT": zh/tutorial/11-vacuum-hot.md
           - "12 · 验证方法论": zh/tutorial/12-testing-methodology.md
+      - 自主重建:
+          - "从零构建 MiniPostgres": zh/journey/index.md
+          - "01 · 值与行契约": zh/journey/stage-01.md
+          - "02 · 持久化类型目录": zh/journey/stage-02.md
+          - "03 · 冻结 SQL 词法器": zh/journey/stage-03.md
+          - "04 · 感知优先级的 SQL Parser": zh/journey/stage-04.md
+          - "05 · 名称与类型绑定": zh/journey/stage-05.md
+          - "06 · 逻辑与物理计划": zh/journey/stage-06.md
+          - "07 · 参考内存表": zh/journey/stage-07.md
+          - "08 · Volcano 迭代器执行": zh/journey/stage-08.md
+          - "09 · 带校验的 DML 查询闭环": zh/journey/stage-09.md
+          - "10 · Explain 与 Executor 清理": zh/journey/stage-10.md
+          - "11 · 带校验和的存储页": zh/journey/stage-11.md
+          - "12 · 持久 Heap File": zh/journey/stage-12.md
+          - "13 · 持久 BTree 核心": zh/journey/stage-13.md
+          - "14 · 已发布表索引": zh/journey/stage-14.md
+          - "15 · 统计信息与 ANALYZE": zh/journey/stage-15.md
+          - "16 · 带成本的逻辑改写": zh/journey/stage-16.md
+          - "17 · Optimizer 与执行度量": zh/journey/stage-17.md
+          - "18 · MVCC 状态模型": zh/journey/stage-18.md
+          - "19 · 事务与快照生命周期": zh/journey/stage-19.md
+          - "20 · 版本化 Heap 可见性": zh/journey/stage-20.md
+          - "21 · 写锁与死锁": zh/journey/stage-21.md
+          - "22 · 带校验和的 WAL Record": zh/journey/stage-22.md
+          - "23 · 恢复与死锁受害者": zh/journey/stage-23.md
+          - "24 · Sharp Checkpoint 持久性": zh/journey/stage-24.md
+          - "25 · WAL 持久性与清理 Horizon": zh/journey/stage-25.md
+          - "26 · Vacuum、HOT 与崩溃矩阵": zh/journey/stage-26.md
+          - "27 · 维护领域闭环": zh/journey/stage-27.md
+          - "28 · 自连接作用域拒绝": zh/journey/stage-28.md
+          - "29 · 跨层正确性回归": zh/journey/stage-29.md
+          - "30 · HOT 审计闭环": zh/journey/stage-30.md
+      - Agent 带教:
+          - "CLI 使用教程": zh/agent-guide.md
       - 参考资料:
           - "快速开始": zh/index.md
           - "架构总览": zh/tour.md

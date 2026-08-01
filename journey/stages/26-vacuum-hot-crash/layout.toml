@@ -1,0 +1,18 @@
+failure_files = ["tests/acceptance/test_phase_d.py", "tests/crash/test_checkpoint_matrix.py", "tests/crash/test_commit_matrix.py", "tests/integration/test_hot_update.py", "tests/integration/test_vacuum_reuse.py", "tests/reliability/test_engine_recovery.py", "tests/reliability/test_index_rebuild.py", "tests/unit/maintenance/test_coordinator.py", "tests/unit/maintenance/test_hot.py", "tests/unit/wal/test_wal_manager.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Vacuum, HOT, and crash matrix mechanism"
+title_zh = "Vacuum、HOT 与崩溃矩阵机制"
+summary_en = "Vacuum and HOT preserve indexed visibility, and every failpoint recovers to a declared old-or-new state."
+summary_zh = "Vacuum 与 HOT 保持索引可见性，每个 Failpoint 都恢复到声明的旧或新状态。"
+files = ["src/minipostgres/engine.py", "src/minipostgres/maintenance/coordinator.py", "src/minipostgres/maintenance/hot.py", "src/minipostgres/maintenance/vacuum.py", "src/minipostgres/storage/buffer.py", "src/minipostgres/storage/disk.py", "src/minipostgres/storage/heap.py", "src/minipostgres/storage/indexed.py", "src/minipostgres/testing/failpoints.py", "src/minipostgres/transaction/manager.py", "src/minipostgres/wal/recovery.py"]
+
+[[blocks]]
+id = "supporting"
+title_en = "Package, fixture, and project support"
+title_zh = "包、Fixture 与工程支撑"
+summary_en = "Keep exports, test corpora, dependencies, and the runtime environment reproducible."
+summary_zh = "保持包导出、测试语料、依赖与运行环境可复现。"
+files = ["src/minipostgres/testing/__init__.py", "tests/crash/worker.py"]
+supporting = true

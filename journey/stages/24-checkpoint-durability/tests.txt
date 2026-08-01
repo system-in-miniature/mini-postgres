@@ -1,0 +1,2 @@
+tests/unit/wal/test_checkpoint.py
+tests/unit/wal/test_recovery.py

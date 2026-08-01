@@ -1,0 +1,9 @@
+failure_files = ["tests/contract/test_schema_unique_constraints.py", "tests/contract/test_unique_index.py", "tests/integration/test_create_index.py", "tests/integration/test_engine_heap_restart.py", "tests/integration/test_query_loop.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Published table indexes mechanism"
+title_zh = "已发布表索引机制"
+summary_en = "Index creation and row writes publish no partial heap-index state and enforce declared uniqueness."
+summary_zh = "Index Creation 与 Row Write 不发布部分 Heap-Index 状态，并执行声明的唯一性。"
+files = ["src/minipostgres/catalog/catalog.py", "src/minipostgres/engine.py", "src/minipostgres/executor/operators.py", "src/minipostgres/storage/indexed.py"]

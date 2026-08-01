@@ -1,0 +1,9 @@
+failure_files = ["tests/property/test_selectivity_bounds.py", "tests/unit/planner/test_constant_folding.py", "tests/unit/planner/test_cost.py", "tests/unit/planner/test_filter_pushdown.py", "tests/unit/planner/test_projection_pruning.py", "tests/unit/planner/test_selectivity.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Costed logical rewrites mechanism"
+title_zh = "带成本的逻辑改写机制"
+summary_en = "Every rewrite preserves output schema and meaning, while every estimate stays within physical bounds."
+summary_zh = "每次 Rewrite 都保持输出 Schema 与语义，每个 Estimate 都保持在物理边界内。"
+files = ["src/minipostgres/planner/cost.py", "src/minipostgres/planner/logical.py", "src/minipostgres/planner/rules.py", "src/minipostgres/planner/selectivity.py", "src/minipostgres/sql/binder.py"]

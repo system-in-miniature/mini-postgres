@@ -1,0 +1,6 @@
+tests/property/test_selectivity_bounds.py
+tests/unit/planner/test_constant_folding.py
+tests/unit/planner/test_cost.py
+tests/unit/planner/test_filter_pushdown.py
+tests/unit/planner/test_projection_pruning.py
+tests/unit/planner/test_selectivity.py

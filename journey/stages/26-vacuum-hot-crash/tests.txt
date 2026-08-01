@@ -1,0 +1,10 @@
+tests/acceptance/test_phase_d.py
+tests/crash/test_checkpoint_matrix.py
+tests/crash/test_commit_matrix.py
+tests/integration/test_hot_update.py
+tests/integration/test_vacuum_reuse.py
+tests/reliability/test_engine_recovery.py
+tests/reliability/test_index_rebuild.py
+tests/unit/maintenance/test_coordinator.py
+tests/unit/maintenance/test_hot.py
+tests/unit/wal/test_wal_manager.py

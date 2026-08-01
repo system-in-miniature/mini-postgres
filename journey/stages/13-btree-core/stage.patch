@@ -1,0 +1,1757 @@
+diff --git a/src/minipostgres/index/__init__.py b/src/minipostgres/index/__init__.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9af5a25caf79e00facb3e5209f0fc8bd91e03098
+--- /dev/null
++++ b/src/minipostgres/index/__init__.py
+@@ -0,0 +1,6 @@
++"""Persistent B+Tree access method and typed ordered keys."""
++
++from minipostgres.index.btree import BTree
++from minipostgres.index.key import KeyCodec
++
++__all__ = ["BTree", "KeyCodec"]
+diff --git a/src/minipostgres/index/btree.py b/src/minipostgres/index/btree.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0baf52ba8b49356db7c133f47093b65eafde632d
+--- /dev/null
++++ b/src/minipostgres/index/btree.py
+@@ -0,0 +1,771 @@
++"""Persistent page-based B+Tree insertion and point search."""
++
++from __future__ import annotations
++
++import threading
++from bisect import bisect_left, bisect_right
++from typing import TYPE_CHECKING, cast
++
++from minipostgres.errors import CorruptPage, PageFull
++from minipostgres.index.pages import (
++    InternalPage,
++    LeafEntry,
++    LeafPage,
++    MetaPage,
++    decode_internal,
++    decode_leaf,
++    decode_meta,
++    encode_internal,
++    encode_leaf,
++    encode_meta,
++)
++from minipostgres.row import TID
++from minipostgres.storage.buffer import BufferPool, PageGuard
++from minipostgres.storage.constants import PAGE_BODY_SIZE, PageKind
++from minipostgres.storage.identifiers import btree_page_key, btree_relation
++from minipostgres.storage.page import decode_page, encode_page
++
++if TYPE_CHECKING:
++    from minipostgres.index.iterator import BTreeRangeIterator
++
++
++class BTree:
++    """A persistent sorted multimap from encoded keys to candidate heap TIDs."""
++
++    def __init__(
++        self,
++        buffer_pool: BufferPool,
++        index_id: int,
++        root_page_id: int,
++        height: int,
++    ) -> None:
++        self._pool = buffer_pool
++        self.index_id = index_id
++        self._relation = btree_relation(index_id)
++        self._root_page_id = root_page_id
++        self._height = height
++        self._lock = threading.RLock()
++
++    @classmethod
++    def open(cls, buffer_pool: BufferPool, index_id: int) -> BTree:
++        """Open an existing tree or initialize metapage plus empty leaf root."""
++
++        relation = btree_relation(index_id)
++        page_count = buffer_pool.page_count(relation)
++        if page_count == 0:
++            with buffer_pool.new_page(relation, PageKind.BTREE_META) as guard:
++                if guard.key.page_id != 0:
++                    raise CorruptPage("BTree metapage was not allocated at page zero")
++            with buffer_pool.new_page(relation, PageKind.BTREE_LEAF) as guard:
++                root_page_id = guard.key.page_id
++                cls._replace_guard(
++                    guard,
++                    PageKind.BTREE_LEAF,
++                    encode_leaf(LeafPage((), None, None)),
++                )
++            tree = cls(buffer_pool, index_id, root_page_id, 1)
++            tree._write_meta()
++            return tree
++
++        meta_key = btree_page_key(index_id, 0)
++        with buffer_pool.fetch_page(meta_key) as guard:
++            decoded = decode_page(meta_key, guard.page_bytes)
++            if decoded.kind is not PageKind.BTREE_META:
++                raise CorruptPage("BTree page zero is not a metapage")
++            meta = decode_meta(decoded.body)
++        if meta.root_page_id >= page_count:
++            raise CorruptPage("BTree metapage root is not allocated")
++        return cls(
++            buffer_pool,
++            index_id,
++            meta.root_page_id,
++            meta.height,
++        )
++
++    @property
++    def height(self) -> int:
++        return self._height
++
++    @property
++    def root_page_id(self) -> int:
++        return self._root_page_id
++
++    @property
++    def relation(self):
++        """Return the physical relation identity used by this tree."""
++
++        return self._relation
++
++    def search(self, key: bytes) -> tuple[TID, ...]:
++        """Return every exact-key candidate in deterministic TID order."""
++
++        with self._lock:
++            leaf_id, _ = self._find_leaf(key)
++            leaf = self._read_leaf(leaf_id)
++            while leaf.left_sibling is not None:
++                left = self._read_leaf(leaf.left_sibling)
++                if left.entries and left.entries[-1].key >= key:
++                    leaf_id = leaf.left_sibling
++                    leaf = left
++                else:
++                    break
++
++            found: list[TID] = []
++            while True:
++                found.extend(entry.tid for entry in leaf.entries if entry.key == key)
++                if (
++                    leaf.right_sibling is None
++                    or (leaf.entries and leaf.entries[-1].key > key)
++                ):
++                    break
++                right = self._read_leaf(leaf.right_sibling)
++                if right.entries and right.entries[0].key > key:
++                    break
++                leaf = right
++            return tuple(
++                sorted(
++                    set(found),
++                    key=lambda tid: (tid.page_id, tid.slot_id),
++                )
++            )
++
++    def insert(self, key: bytes, tid: TID) -> None:
++        """Insert one unique key/TID pair and recursively split overflow pages."""
++
++        with self._lock:
++            if tid in self.search(key):
++                return
++            leaf_id, path = self._find_leaf(key)
++            leaf = self._read_leaf(leaf_id)
++            entries = list(leaf.entries)
++            entry = LeafEntry(key, tid)
++            order = [(item.key, item.tid.page_id, item.tid.slot_id) for item in entries]
++            position = bisect_left(order, (key, tid.page_id, tid.slot_id))
++            entries.insert(position, entry)
++            updated = LeafPage(
++                tuple(entries),
++                leaf.left_sibling,
++                leaf.right_sibling,
++            )
++            try:
++                body = encode_leaf(updated)
++            except PageFull:
++                separator, right_id = self._split_leaf(leaf_id, updated)
++                self._propagate_split(path, leaf_id, separator, right_id)
++            else:
++                self._write_page(leaf_id, PageKind.BTREE_LEAF, body)
++
++    def delete(self, key: bytes, tid: TID) -> bool:
++        """Delete one exact key/TID pair and rebalance reachable pages."""
++
++        with self._lock:
++            leaf_id = self._locate_entry_leaf(key, tid)
++            if leaf_id is None:
++                return False
++            path = self._path_to_page(leaf_id)
++            if path is None:
++                raise CorruptPage("reachable BTree leaf has no root path")
++            leaf = self._read_leaf(leaf_id)
++            entries = list(leaf.entries)
++            target = LeafEntry(key, tid)
++            try:
++                entries.remove(target)
++            except ValueError:
++                return False
++            updated = LeafPage(
++                tuple(entries),
++                leaf.left_sibling,
++                leaf.right_sibling,
++            )
++            self._write_page(leaf_id, PageKind.BTREE_LEAF, encode_leaf(updated))
++            self._rebalance_leaf(leaf_id, updated, path)
++            self._refresh_all_separators(self._root_page_id, self._height)
++            return True
++
++    def range(self, lower: bytes, upper: bytes) -> BTreeRangeIterator:
++        """Create an inclusive sibling-backed range iterator."""
++
++        if lower > upper:
++            raise ValueError("range lower bound must not exceed upper bound")
++        from minipostgres.index.iterator import BTreeRangeIterator
++
++        return BTreeRangeIterator(self, lower, upper)
++
++    def first_leaf_page(self, key: bytes) -> int:
++        """Return the leftmost leaf that may contain the requested key."""
++
++        with self._lock:
++            leaf_id, _ = self._find_leaf(key)
++            leaf = self._read_leaf(leaf_id)
++            while leaf.left_sibling is not None:
++                left = self._read_leaf(leaf.left_sibling)
++                if left.entries and left.entries[-1].key >= key:
++                    leaf_id = leaf.left_sibling
++                    leaf = left
++                else:
++                    break
++            return leaf_id
++
++    def pin_leaf(self, page_id: int) -> tuple[PageGuard, LeafPage]:
++        """Pin and decode one leaf for a range iterator."""
++
++        key = btree_page_key(self.index_id, page_id)
++        guard = self._pool.fetch_page(key)
++        try:
++            decoded = decode_page(key, guard.page_bytes)
++            if decoded.kind is not PageKind.BTREE_LEAF:
++                raise CorruptPage(f"BTree page {page_id} is not a leaf")
++            return guard, decode_leaf(decoded.body)
++        except BaseException:
++            guard.release()
++            raise
++
++    def _find_leaf(self, key: bytes) -> tuple[int, list[tuple[int, int]]]:
++        page_id = self._root_page_id
++        path: list[tuple[int, int]] = []
++        for _ in range(self._height - 1):
++            internal = self._read_internal(page_id)
++            child_index = bisect_right(internal.keys, key)
++            path.append((page_id, child_index))
++            page_id = internal.children[child_index]
++        return page_id, path
++
++    def _split_leaf(self, page_id: int, page: LeafPage) -> tuple[bytes, int]:
++        split_at = self._leaf_split_position(page.entries)
++        left_entries = page.entries[:split_at]
++        right_entries = page.entries[split_at:]
++        with self._pool.new_page(
++            self._relation,
++            PageKind.BTREE_LEAF,
++        ) as right_guard:
++            right_id = right_guard.key.page_id
++            right = LeafPage(
++                right_entries,
++                left_sibling=page_id,
++                right_sibling=page.right_sibling,
++            )
++            self._replace_guard(
++                right_guard,
++                PageKind.BTREE_LEAF,
++                encode_leaf(right),
++            )
++
++        left = LeafPage(
++            left_entries,
++            left_sibling=page.left_sibling,
++            right_sibling=right_id,
++        )
++        self._write_page(
++            page_id,
++            PageKind.BTREE_LEAF,
++            encode_leaf(left),
++        )
++        if page.right_sibling is not None:
++            old_right = self._read_leaf(page.right_sibling)
++            linked = LeafPage(
++                old_right.entries,
++                left_sibling=right_id,
++                right_sibling=old_right.right_sibling,
++            )
++            self._write_page(
++                page.right_sibling,
++                PageKind.BTREE_LEAF,
++                encode_leaf(linked),
++            )
++        return right_entries[0].key, right_id
++
++    def _propagate_split(
++        self,
++        path: list[tuple[int, int]],
++        left_id: int,
++        separator: bytes,
++        right_id: int,
++    ) -> None:
++        while path:
++            parent_id, child_index = path.pop()
++            parent = self._read_internal(parent_id)
++            if parent.children[child_index] != left_id:
++                raise CorruptPage("BTree insertion path no longer matches parent")
++            keys = list(parent.keys)
++            children = list(parent.children)
++            keys.insert(child_index, separator)
++            children.insert(child_index + 1, right_id)
++            updated = InternalPage(tuple(keys), tuple(children))
++            try:
++                body = encode_internal(updated)
++            except PageFull:
++                promoted, new_right_id = self._split_internal(parent_id, updated)
++                left_id = parent_id
++                separator = promoted
++                right_id = new_right_id
++            else:
++                self._write_page(parent_id, PageKind.BTREE_INTERNAL, body)
++                return
++
++        new_root = InternalPage((separator,), (left_id, right_id))
++        new_root_id = self._allocate_page(
++            PageKind.BTREE_INTERNAL,
++            encode_internal(new_root),
++        )
++        self._root_page_id = new_root_id
++        self._height += 1
++        self._write_meta()
++
++    def _split_internal(
++        self,
++        page_id: int,
++        page: InternalPage,
++    ) -> tuple[bytes, int]:
++        middle = len(page.keys) // 2
++        promoted = page.keys[middle]
++        left = InternalPage(
++            page.keys[:middle],
++            page.children[: middle + 1],
++        )
++        right = InternalPage(
++            page.keys[middle + 1 :],
++            page.children[middle + 1 :],
++        )
++        encode_internal(left)
++        right_id = self._allocate_page(
++            PageKind.BTREE_INTERNAL,
++            encode_internal(right),
++        )
++        self._write_page(
++            page_id,
++            PageKind.BTREE_INTERNAL,
++            encode_internal(left),
++        )
++        return promoted, right_id
++
++    def _locate_entry_leaf(self, key: bytes, tid: TID) -> int | None:
++        leaf_id = self.first_leaf_page(key)
++        while True:
++            leaf = self._read_leaf(leaf_id)
++            if LeafEntry(key, tid) in leaf.entries:
++                return leaf_id
++            if (
++                leaf.right_sibling is None
++                or (leaf.entries and leaf.entries[-1].key > key)
++            ):
++                return None
++            right = self._read_leaf(leaf.right_sibling)
++            if right.entries and right.entries[0].key > key:
++                return None
++            leaf_id = leaf.right_sibling
++
++    def _path_to_page(self, target_page_id: int) -> list[tuple[int, int]] | None:
++        def visit(
++            page_id: int,
++            height: int,
++            path: list[tuple[int, int]],
++        ) -> list[tuple[int, int]] | None:
++            if height == 1:
++                return path if page_id == target_page_id else None
++            internal = self._read_internal(page_id)
++            for child_index, child_id in enumerate(internal.children):
++                found = visit(
++                    child_id,
++                    height - 1,
++                    [*path, (page_id, child_index)],
++                )
++                if found is not None:
++                    return found
++            return None
++
++        return visit(self._root_page_id, self._height, [])
++
++    def _rebalance_leaf(
++        self,
++        page_id: int,
++        page: LeafPage,
++        path: list[tuple[int, int]],
++    ) -> None:
++        if not path:
++            return
++        if len(encode_leaf(page)) >= PAGE_BODY_SIZE // 2 and page.entries:
++            return
++        parent_id, child_index = path[-1]
++        ancestors = path[:-1]
++        parent = self._read_internal(parent_id)
++
++        if child_index > 0:
++            left_id = parent.children[child_index - 1]
++            left = self._read_leaf(left_id)
++            if left.entries:
++                borrowed = left.entries[-1]
++                new_left = LeafPage(
++                    left.entries[:-1],
++                    left.left_sibling,
++                    left.right_sibling,
++                )
++                new_page = LeafPage(
++                    (borrowed, *page.entries),
++                    page.left_sibling,
++                    page.right_sibling,
++                )
++                if self._leaf_can_lend(new_left) and self._leaf_fits(new_page):
++                    keys = list(parent.keys)
++                    keys[child_index - 1] = new_page.entries[0].key
++                    self._write_page(
++                        left_id, PageKind.BTREE_LEAF, encode_leaf(new_left)
++                    )
++                    self._write_page(
++                        page_id, PageKind.BTREE_LEAF, encode_leaf(new_page)
++                    )
++                    self._write_page(
++                        parent_id,
++                        PageKind.BTREE_INTERNAL,
++                        encode_internal(
++                            InternalPage(tuple(keys), parent.children)
++                        ),
++                    )
++                    return
++
++        if child_index + 1 < len(parent.children):
++            right_id = parent.children[child_index + 1]
++            right = self._read_leaf(right_id)
++            if right.entries:
++                borrowed = right.entries[0]
++                new_page = LeafPage(
++                    (*page.entries, borrowed),
++                    page.left_sibling,
++                    page.right_sibling,
++                )
++                new_right = LeafPage(
++                    right.entries[1:],
++                    right.left_sibling,
++                    right.right_sibling,
++                )
++                if self._leaf_can_lend(new_right) and self._leaf_fits(new_page):
++                    keys = list(parent.keys)
++                    keys[child_index] = new_right.entries[0].key
++                    self._write_page(
++                        page_id, PageKind.BTREE_LEAF, encode_leaf(new_page)
++                    )
++                    self._write_page(
++                        right_id, PageKind.BTREE_LEAF, encode_leaf(new_right)
++                    )
++                    self._write_page(
++                        parent_id,
++                        PageKind.BTREE_INTERNAL,
++                        encode_internal(
++                            InternalPage(tuple(keys), parent.children)
++                        ),
++                    )
++                    return
++
++        if child_index > 0:
++            left_id = parent.children[child_index - 1]
++            left = self._read_leaf(left_id)
++            merged = LeafPage(
++                (*left.entries, *page.entries),
++                left.left_sibling,
++                page.right_sibling,
++            )
++            if self._leaf_fits(merged):
++                self._write_page(
++                    left_id, PageKind.BTREE_LEAF, encode_leaf(merged)
++                )
++                if page.right_sibling is not None:
++                    self._set_leaf_left_sibling(page.right_sibling, left_id)
++                reduced = self._remove_parent_child(parent, child_index)
++                self._write_page(
++                    parent_id,
++                    PageKind.BTREE_INTERNAL,
++                    encode_internal(reduced),
++                )
++                self._rebalance_internal(parent_id, reduced, ancestors)
++                return
++
++        if child_index + 1 < len(parent.children):
++            right_id = parent.children[child_index + 1]
++            right = self._read_leaf(right_id)
++            merged = LeafPage(
++                (*page.entries, *right.entries),
++                page.left_sibling,
++                right.right_sibling,
++            )
++            if self._leaf_fits(merged):
++                self._write_page(
++                    page_id, PageKind.BTREE_LEAF, encode_leaf(merged)
++                )
++                if right.right_sibling is not None:
++                    self._set_leaf_left_sibling(right.right_sibling, page_id)
++                reduced = self._remove_parent_child(parent, child_index + 1)
++                self._write_page(
++                    parent_id,
++                    PageKind.BTREE_INTERNAL,
++                    encode_internal(reduced),
++                )
++                self._rebalance_internal(parent_id, reduced, ancestors)
++
++    def _rebalance_internal(
++        self,
++        page_id: int,
++        page: InternalPage,
++        ancestors: list[tuple[int, int]],
++    ) -> None:
++        if page_id == self._root_page_id:
++            if len(page.children) == 1 and self._height > 1:
++                self._root_page_id = page.children[0]
++                self._height -= 1
++                self._write_meta()
++            return
++        if len(encode_internal(page)) >= PAGE_BODY_SIZE // 2:
++            return
++        if not ancestors:
++            raise CorruptPage("non-root internal page has no parent path")
++        parent_id, child_index = ancestors[-1]
++        higher = ancestors[:-1]
++        parent = self._read_internal(parent_id)
++
++        if child_index > 0:
++            left_id = parent.children[child_index - 1]
++            left = self._read_internal(left_id)
++            if left.keys:
++                new_left = InternalPage(left.keys[:-1], left.children[:-1])
++                new_page = InternalPage(
++                    (parent.keys[child_index - 1], *page.keys),
++                    (left.children[-1], *page.children),
++                )
++                if self._internal_can_lend(new_left) and self._internal_fits(
++                    new_page
++                ):
++                    keys = list(parent.keys)
++                    keys[child_index - 1] = left.keys[-1]
++                    self._write_page(
++                        left_id,
++                        PageKind.BTREE_INTERNAL,
++                        encode_internal(new_left),
++                    )
++                    self._write_page(
++                        page_id,
++                        PageKind.BTREE_INTERNAL,
++                        encode_internal(new_page),
++                    )
++                    self._write_page(
++                        parent_id,
++                        PageKind.BTREE_INTERNAL,
++                        encode_internal(
++                            InternalPage(tuple(keys), parent.children)
++                        ),
++                    )
++                    return
++
++        if child_index + 1 < len(parent.children):
++            right_id = parent.children[child_index + 1]
++            right = self._read_internal(right_id)
++            if right.keys:
++                new_page = InternalPage(
++                    (*page.keys, parent.keys[child_index]),
++                    (*page.children, right.children[0]),
++                )
++                new_right = InternalPage(right.keys[1:], right.children[1:])
++                if self._internal_can_lend(new_right) and self._internal_fits(
++                    new_page
++                ):
++                    keys = list(parent.keys)
++                    keys[child_index] = right.keys[0]
++                    self._write_page(
++                        page_id,
++                        PageKind.BTREE_INTERNAL,
++                        encode_internal(new_page),
++                    )
++                    self._write_page(
++                        right_id,
++                        PageKind.BTREE_INTERNAL,
++                        encode_internal(new_right),
++                    )
++                    self._write_page(
++                        parent_id,
++                        PageKind.BTREE_INTERNAL,
++                        encode_internal(
++                            InternalPage(tuple(keys), parent.children)
++                        ),
++                    )
++                    return
++
++        if child_index > 0:
++            left_id = parent.children[child_index - 1]
++            left = self._read_internal(left_id)
++            merged = InternalPage(
++                (*left.keys, parent.keys[child_index - 1], *page.keys),
++                (*left.children, *page.children),
++            )
++            if self._internal_fits(merged):
++                self._write_page(
++                    left_id,
++                    PageKind.BTREE_INTERNAL,
++                    encode_internal(merged),
++                )
++                reduced = self._remove_parent_child(parent, child_index)
++                self._write_page(
++                    parent_id,
++                    PageKind.BTREE_INTERNAL,
++                    encode_internal(reduced),
++                )
++                self._rebalance_internal(parent_id, reduced, higher)
++                return
++
++        if child_index + 1 < len(parent.children):
++            right_id = parent.children[child_index + 1]
++            right = self._read_internal(right_id)
++            merged = InternalPage(
++                (*page.keys, parent.keys[child_index], *right.keys),
++                (*page.children, *right.children),
++            )
++            if self._internal_fits(merged):
++                self._write_page(
++                    page_id,
++                    PageKind.BTREE_INTERNAL,
++                    encode_internal(merged),
++                )
++                reduced = self._remove_parent_child(parent, child_index + 1)
++                self._write_page(
++                    parent_id,
++                    PageKind.BTREE_INTERNAL,
++                    encode_internal(reduced),
++                )
++                self._rebalance_internal(parent_id, reduced, higher)
++
++    @staticmethod
++    def _remove_parent_child(
++        parent: InternalPage,
++        child_index: int,
++    ) -> InternalPage:
++        children = list(parent.children)
++        keys = list(parent.keys)
++        children.pop(child_index)
++        keys.pop(child_index - 1 if child_index > 0 else 0)
++        return InternalPage(tuple(keys), tuple(children))
++
++    def _set_leaf_left_sibling(self, page_id: int, left_id: int) -> None:
++        leaf = self._read_leaf(page_id)
++        self._write_page(
++            page_id,
++            PageKind.BTREE_LEAF,
++            encode_leaf(
++                LeafPage(leaf.entries, left_id, leaf.right_sibling)
++            ),
++        )
++
++    @staticmethod
++    def _leaf_fits(page: LeafPage) -> bool:
++        try:
++            encode_leaf(page)
++        except PageFull:
++            return False
++        return True
++
++    @staticmethod
++    def _leaf_can_lend(page: LeafPage) -> bool:
++        return bool(page.entries) and len(encode_leaf(page)) >= PAGE_BODY_SIZE // 2
++
++    @staticmethod
++    def _internal_fits(page: InternalPage) -> bool:
++        try:
++            encode_internal(page)
++        except PageFull:
++            return False
++        return True
++
++    @staticmethod
++    def _internal_can_lend(page: InternalPage) -> bool:
++        return bool(page.keys) and len(encode_internal(page)) >= PAGE_BODY_SIZE // 2
++
++    def _refresh_all_separators(
++        self,
++        page_id: int,
++        height: int,
++    ) -> bytes | None:
++        if height == 1:
++            leaf = self._read_leaf(page_id)
++            if not leaf.entries:
++                return None
++            return leaf.entries[0].key
++        internal = self._read_internal(page_id)
++        first_keys = [
++            self._refresh_all_separators(child, height - 1)
++            for child in internal.children
++        ]
++        if any(key is None for key in first_keys[1:]):
++            raise CorruptPage("non-leftmost BTree subtree is empty")
++        refreshed = InternalPage(
++            tuple(cast(bytes, key) for key in first_keys[1:]),
++            internal.children,
++        )
++        if refreshed != internal:
++            self._write_page(
++                page_id,
++                PageKind.BTREE_INTERNAL,
++                encode_internal(refreshed),
++            )
++        return first_keys[0]
++
++    @staticmethod
++    def _leaf_split_position(entries: tuple[LeafEntry, ...]) -> int:
++        if len(entries) < 2:
++            raise PageFull("one BTree leaf entry exceeds the page capacity")
++        candidates: list[tuple[int, int]] = []
++        for position in range(1, len(entries)):
++            left_size = BTree._leaf_body_size(entries[:position])
++            right_size = BTree._leaf_body_size(entries[position:])
++            if left_size <= PAGE_BODY_SIZE and right_size <= PAGE_BODY_SIZE:
++                candidates.append((abs(left_size - right_size), position))
++        if not candidates:
++            raise PageFull("BTree leaf cannot be split into valid pages")
++        return min(candidates)[1]
++
++    @staticmethod
++    def _leaf_body_size(entries: tuple[LeafEntry, ...]) -> int:
++        # Fixed leaf header plus key length, key bytes, and fixed TID.
++        return 24 + sum(2 + len(entry.key) + 12 for entry in entries)
++
++    def _read_internal(self, page_id: int) -> InternalPage:
++        decoded = self._read_page(page_id, PageKind.BTREE_INTERNAL)
++        return decode_internal(decoded)
++
++    def _read_leaf(self, page_id: int) -> LeafPage:
++        decoded = self._read_page(page_id, PageKind.BTREE_LEAF)
++        return decode_leaf(decoded)
++
++    def _read_page(self, page_id: int, expected_kind: PageKind) -> bytes:
++        key = btree_page_key(self.index_id, page_id)
++        with self._pool.fetch_page(key) as guard:
++            decoded = decode_page(key, guard.page_bytes)
++            if decoded.kind is not expected_kind:
++                raise CorruptPage(
++                    f"BTree page {page_id} has kind {decoded.kind.name}, "
++                    f"expected {expected_kind.name}"
++                )
++            return decoded.body
++
++    def _write_page(self, page_id: int, kind: PageKind, body: bytes) -> None:
++        key = btree_page_key(self.index_id, page_id)
++        with self._pool.fetch_page(key) as guard:
++            self._replace_guard(guard, kind, body)
++
++    def _allocate_page(self, kind: PageKind, body: bytes) -> int:
++        with self._pool.new_page(self._relation, kind) as guard:
++            self._replace_guard(guard, kind, body)
++            return guard.key.page_id
++
++    def _write_meta(self) -> None:
++        self._write_page(
++            0,
++            PageKind.BTREE_META,
++            encode_meta(MetaPage(self._root_page_id, self._height)),
++        )
++
++    @staticmethod
++    def _replace_guard(guard: PageGuard, kind: PageKind, body: bytes) -> None:
++        guard.replace_bytes(
++            encode_page(
++                guard.key,
++                kind,
++                page_lsn=0,
++                body=body,
++            )
++        )
++        guard.mark_dirty(page_lsn=0)
+diff --git a/src/minipostgres/index/iterator.py b/src/minipostgres/index/iterator.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..37ce905523d5865c18b0dbf875eb1bc8d4884c3a
+--- /dev/null
++++ b/src/minipostgres/index/iterator.py
+@@ -0,0 +1,82 @@
++"""Leaf-sibling range iteration with bounded pin ownership."""
++
++from __future__ import annotations
++
++from types import TracebackType
++from typing import TYPE_CHECKING
++
++from minipostgres.index.pages import LeafPage
++from minipostgres.row import TID
++from minipostgres.storage.buffer import PageGuard
++
++if TYPE_CHECKING:
++    from minipostgres.index.btree import BTree
++
++
++class BTreeRangeIterator:
++    """Inclusive range iterator that pins only its current leaf."""
++
++    def __init__(self, tree: BTree, lower: bytes, upper: bytes) -> None:
++        self._tree = tree
++        self._lower = lower
++        self._upper = upper
++        self._guard: PageGuard | None = None
++        self._leaf: LeafPage | None = None
++        self._position = 0
++        self._closed = False
++        self._load(tree.first_leaf_page(lower))
++
++    @property
++    def current_page_id(self) -> int | None:
++        return None if self._guard is None else self._guard.key.page_id
++
++    def __iter__(self) -> BTreeRangeIterator:
++        return self
++
++    def __next__(self) -> tuple[bytes, TID]:
++        while not self._closed and self._leaf is not None:
++            while self._position < len(self._leaf.entries):
++                entry = self._leaf.entries[self._position]
++                self._position += 1
++                if entry.key < self._lower:
++                    continue
++                if entry.key > self._upper:
++                    self.close()
++                    raise StopIteration
++                return entry.key, entry.tid
++            next_page = self._leaf.right_sibling
++            if next_page is None:
++                self.close()
++                raise StopIteration
++            self._load(next_page)
++        raise StopIteration
++
++    def __enter__(self) -> BTreeRangeIterator:
++        if self._closed:
++            raise RuntimeError("range iterator is closed")
++        return self
++
++    def __exit__(
++        self,
++        exc_type: type[BaseException] | None,
++        exc_value: BaseException | None,
++        traceback: TracebackType | None,
++    ) -> None:
++        self.close()
++
++    def close(self) -> None:
++        """Release the current leaf pin; repeated close is harmless."""
++
++        if self._closed:
++            return
++        self._closed = True
++        if self._guard is not None:
++            self._guard.release()
++        self._guard = None
++        self._leaf = None
++
++    def _load(self, page_id: int) -> None:
++        if self._guard is not None:
++            self._guard.release()
++        self._guard, self._leaf = self._tree.pin_leaf(page_id)
++        self._position = 0
+diff --git a/src/minipostgres/index/key.py b/src/minipostgres/index/key.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f4759ba004fafc8f3860908540558b9aa812fb3c
+--- /dev/null
++++ b/src/minipostgres/index/key.py
+@@ -0,0 +1,73 @@
++"""Order-preserving composite key encoding for the frozen B+Tree subset."""
++
++from __future__ import annotations
++
++import math
++import struct
++
++from minipostgres.errors import TypeMismatch
++from minipostgres.types import DataType, Scalar, validate_int64
++
++_INT_TAG = 1
++_FLOAT_TAG = 2
++_BOOLEAN_TAG = 3
++_TEXT_TAG = 4
++_SIGN_BIT = 1 << 63
++_UINT64_MASK = 2**64 - 1
++_FLOAT64 = struct.Struct(">d")
++_UINT64 = struct.Struct(">Q")
++
++
++class KeyCodec:
++    """Encode fixed-schema scalar tuples so byte order equals SQL value order."""
++
++    def __init__(self, data_types: tuple[DataType, ...]) -> None:
++        if not data_types:
++            raise ValueError("an index key must contain at least one component")
++        self.data_types = data_types
++
++    def encode(self, values: tuple[Scalar, ...]) -> bytes:
++        """Encode a non-null key with one unambiguous component per column."""
++
++        if len(values) != len(self.data_types):
++            raise TypeMismatch(
++                f"index key requires {len(self.data_types)} components"
++            )
++        encoded = bytearray()
++        for data_type, value in zip(self.data_types, values, strict=True):
++            if value is None:
++                raise TypeMismatch("NULL index key is outside the frozen scope")
++            if data_type is DataType.INT64:
++                if type(value) is not int:
++                    raise TypeMismatch("index key component must be INT64")
++                integer = validate_int64(value)
++                encoded.append(_INT_TAG)
++                encoded.extend((integer + _SIGN_BIT).to_bytes(8, "big"))
++            elif data_type is DataType.FLOAT64:
++                if type(value) is not float:
++                    raise TypeMismatch("index key component must be FLOAT64")
++                if math.isnan(value):
++                    raise TypeMismatch("NaN index keys are outside the frozen scope")
++                bits = _UINT64.unpack(_FLOAT64.pack(value))[0]
++                sortable = (
++                    (~bits & _UINT64_MASK)
++                    if bits & _SIGN_BIT
++                    else bits ^ _SIGN_BIT
++                )
++                encoded.append(_FLOAT_TAG)
++                encoded.extend(_UINT64.pack(sortable))
++            elif data_type is DataType.BOOLEAN:
++                if type(value) is not bool:
++                    raise TypeMismatch("index key component must be BOOLEAN")
++                encoded.extend((_BOOLEAN_TAG, int(value)))
++            else:
++                if type(value) is not str:
++                    raise TypeMismatch("index key component must be TEXT")
++                encoded.append(_TEXT_TAG)
++                for byte in value.encode("utf-8"):
++                    if byte == 0:
++                        encoded.extend((0, 255))
++                    else:
++                        encoded.append(byte)
++                encoded.extend((0, 0))
++        return bytes(encoded)
+diff --git a/src/minipostgres/index/pages.py b/src/minipostgres/index/pages.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2af3cc3f0f7d4abb742638c280953d82b13cb6ef
+--- /dev/null
++++ b/src/minipostgres/index/pages.py
+@@ -0,0 +1,210 @@
++"""Persistent body codecs for MiniPostgres B+Tree pages."""
++
++from __future__ import annotations
++
++import struct
++from dataclasses import dataclass
++from itertools import pairwise
++
++from minipostgres.errors import CorruptPage, PageFull
++from minipostgres.row import TID
++from minipostgres.storage.constants import PAGE_BODY_SIZE
++
++_META_MAGIC = b"BTM1"
++_INTERNAL_MAGIC = b"BTI1"
++_LEAF_MAGIC = b"BTL1"
++_NO_PAGE = 2**64 - 1
++_MAX_UINT64 = _NO_PAGE
++_MAX_UINT32 = 2**32 - 1
++_META = struct.Struct(">4sQH2x")
++_INTERNAL = struct.Struct(">4sH2xQ")
++_LEAF = struct.Struct(">4sQQH2x")
++_KEY_LENGTH = struct.Struct(">H")
++_CHILD = struct.Struct(">Q")
++_TID = struct.Struct(">QI")
++
++
++@dataclass(frozen=True, slots=True)
++class MetaPage:
++    root_page_id: int
++    height: int
++
++
++@dataclass(frozen=True, slots=True)
++class InternalPage:
++    keys: tuple[bytes, ...]
++    children: tuple[int, ...]
++
++
++@dataclass(frozen=True, slots=True)
++class LeafEntry:
++    key: bytes
++    tid: TID
++
++
++@dataclass(frozen=True, slots=True)
++class LeafPage:
++    entries: tuple[LeafEntry, ...]
++    left_sibling: int | None
++    right_sibling: int | None
++
++
++def encode_meta(page: MetaPage) -> bytes:
++    """Encode root identity and current tree height."""
++
++    _page_id(page.root_page_id, "root page")
++    if type(page.height) is not int or page.height <= 0 or page.height > 65535:
++        raise CorruptPage("invalid BTree height")
++    return _META.pack(_META_MAGIC, page.root_page_id, page.height)
++
++
++def decode_meta(body: bytes) -> MetaPage:
++    if len(body) != _META.size:
++        raise CorruptPage("truncated or trailing BTree metapage")
++    magic, root_page_id, height = _META.unpack(body)
++    if magic != _META_MAGIC:
++        raise CorruptPage("invalid BTree metapage magic")
++    page = MetaPage(root_page_id, height)
++    encode_meta(page)
++    return page
++
++
++def encode_internal(page: InternalPage) -> bytes:
++    """Encode ordered separators and their one-more child pointers."""
++
++    if len(page.children) != len(page.keys) + 1:
++        raise CorruptPage("internal page children must outnumber keys by one")
++    if not page.children:
++        raise CorruptPage("internal page has no children")
++    if any(left > right for left, right in pairwise(page.keys)):
++        raise CorruptPage("internal separator keys are not sorted")
++    encoded = bytearray(
++        _INTERNAL.pack(
++            _INTERNAL_MAGIC,
++            len(page.keys),
++            _page_id(page.children[0], "child page"),
++        )
++    )
++    for key, child in zip(page.keys, page.children[1:], strict=True):
++        _append_key(encoded, key)
++        encoded.extend(_CHILD.pack(_page_id(child, "child page")))
++    return _bounded(encoded)
++
++
++def decode_internal(body: bytes) -> InternalPage:
++    if len(body) < _INTERNAL.size:
++        raise CorruptPage("truncated BTree internal page")
++    magic, key_count, first_child = _INTERNAL.unpack_from(body)
++    if magic != _INTERNAL_MAGIC:
++        raise CorruptPage("invalid BTree internal page magic")
++    cursor = _INTERNAL.size
++    keys: list[bytes] = []
++    children = [first_child]
++    for _ in range(key_count):
++        key, cursor = _read_key(body, cursor)
++        end = cursor + _CHILD.size
++        if end > len(body):
++            raise CorruptPage("truncated BTree child pointer")
++        children.append(_CHILD.unpack_from(body, cursor)[0])
++        keys.append(key)
++        cursor = end
++    if cursor != len(body):
++        raise CorruptPage("BTree internal page has trailing bytes")
++    page = InternalPage(tuple(keys), tuple(children))
++    encode_internal(page)
++    return page
++
++
++def encode_leaf(page: LeafPage) -> bytes:
++    """Encode sorted key/TID pairs and sibling links."""
++
++    ordered = tuple(_entry_order(entry) for entry in page.entries)
++    if any(left > right for left, right in pairwise(ordered)):
++        raise CorruptPage("leaf entries are not sorted")
++    encoded = bytearray(
++        _LEAF.pack(
++            _LEAF_MAGIC,
++            _encode_sibling(page.left_sibling),
++            _encode_sibling(page.right_sibling),
++            len(page.entries),
++        )
++    )
++    for entry in page.entries:
++        _append_key(encoded, entry.key)
++        _page_id(entry.tid.page_id, "TID page")
++        if entry.tid.slot_id > _MAX_UINT32:
++            raise CorruptPage("TID slot is outside the index format")
++        encoded.extend(_TID.pack(entry.tid.page_id, entry.tid.slot_id))
++    return _bounded(encoded)
++
++
++def decode_leaf(body: bytes) -> LeafPage:
++    if len(body) < _LEAF.size:
++        raise CorruptPage("truncated BTree leaf page")
++    magic, left, right, entry_count = _LEAF.unpack_from(body)
++    if magic != _LEAF_MAGIC:
++        raise CorruptPage("invalid BTree leaf page magic")
++    cursor = _LEAF.size
++    entries: list[LeafEntry] = []
++    for _ in range(entry_count):
++        key, cursor = _read_key(body, cursor)
++        end = cursor + _TID.size
++        if end > len(body):
++            raise CorruptPage("truncated BTree leaf TID")
++        page_id, slot_id = _TID.unpack_from(body, cursor)
++        entries.append(LeafEntry(key, TID(page_id, slot_id)))
++        cursor = end
++    if cursor != len(body):
++        raise CorruptPage("BTree leaf page has trailing bytes")
++    page = LeafPage(
++        tuple(entries),
++        _decode_sibling(left),
++        _decode_sibling(right),
++    )
++    encode_leaf(page)
++    return page
++
++
++def _entry_order(entry: LeafEntry) -> tuple[bytes, int, int]:
++    return entry.key, entry.tid.page_id, entry.tid.slot_id
++
++
++def _append_key(encoded: bytearray, key: bytes) -> None:
++    if len(key) > 65535:
++        raise PageFull("BTree key exceeds the page key-length field")
++    encoded.extend(_KEY_LENGTH.pack(len(key)))
++    encoded.extend(key)
++
++
++def _read_key(body: bytes, cursor: int) -> tuple[bytes, int]:
++    length_end = cursor + _KEY_LENGTH.size
++    if length_end > len(body):
++        raise CorruptPage("truncated BTree key length")
++    length = _KEY_LENGTH.unpack_from(body, cursor)[0]
++    end = length_end + length
++    if end > len(body):
++        raise CorruptPage("truncated BTree key")
++    return body[length_end:end], end
++
++
++def _page_id(value: int, field: str) -> int:
++    if type(value) is not int or value < 0 or value >= _NO_PAGE:
++        raise CorruptPage(f"invalid {field}")
++    return value
++
++
++def _encode_sibling(page_id: int | None) -> int:
++    return _NO_PAGE if page_id is None else _page_id(page_id, "sibling page")
++
++
++def _decode_sibling(encoded: int) -> int | None:
++    return None if encoded == _NO_PAGE else encoded
++
++
++def _bounded(encoded: bytearray) -> bytes:
++    if len(encoded) > PAGE_BODY_SIZE:
++        raise PageFull(
++            f"BTree page body is {len(encoded)} bytes; "
++            f"maximum is {PAGE_BODY_SIZE}"
++        )
++    return bytes(encoded)
+diff --git a/src/minipostgres/storage/heap.py b/src/minipostgres/storage/heap.py
+index 2dde750c9da4bfaa8198bfe27f08f812814aa0f6..980b12c314d7b112193acf12ad8707df99ad602a 100644
+--- a/src/minipostgres/storage/heap.py
++++ b/src/minipostgres/storage/heap.py
+@@ -13,7 +13,7 @@ from minipostgres.storage.constants import PAGE_BODY_SIZE, PageKind
+ from minipostgres.storage.free_space import FreeSpaceMap
+ from minipostgres.storage.identifiers import heap_page_key, heap_relation
+ from minipostgres.storage.page import decode_page, encode_page
+-from minipostgres.storage.slotted import SLOT_ENTRY_SIZE, SlottedPage
++from minipostgres.storage.slotted import SlottedPage
+ from minipostgres.storage.tuple import SYSTEM_XID, TupleCodec, TupleVersion
+ from minipostgres.types import Scalar
+ 
+@@ -61,7 +61,10 @@ class HeapTable:
+         encoded_tuple = self._codec.encode(
+             TupleVersion(SYSTEM_XID, 0, None, validated)
+         )
+-        required = len(encoded_tuple) + SLOT_ENTRY_SIZE
++        # A dead slot can be reused without growing the directory. The FSM is
++        # approximate, so use the tuple payload as the lower-bound candidate
++        # size and let SlottedPage perform the exact fit check.
++        required = len(encoded_tuple)
+         with self._lock:
+             for page_id in self.free_space.candidate_pages(required):
+                 tid = self._try_insert(page_id, encoded_tuple)
+@@ -133,7 +136,7 @@ class HeapTable:
+                 except KeyError:
+                     return False
+                 self._publish_page(guard, page)
+-                self.free_space.record(tid.page_id, page.contiguous_free_bytes)
++                self.free_space.record(tid.page_id, page.available_free_bytes)
+                 return True
+ 
+     def _try_insert(self, page_id: int, encoded_tuple: bytes) -> TID | None:
+@@ -145,10 +148,10 @@ class HeapTable:
+             try:
+                 slot_id = page.insert(encoded_tuple)
+             except PageFull:
+-                self.free_space.record(page_id, page.contiguous_free_bytes)
++                self.free_space.record(page_id, page.available_free_bytes)
+                 return None
+             self._publish_page(guard, page)
+-            self.free_space.record(page_id, page.contiguous_free_bytes)
++            self.free_space.record(page_id, page.available_free_bytes)
+             return TID(page_id, slot_id)
+ 
+     def _insert_new_page(self, encoded_tuple: bytes) -> TID:
+@@ -158,7 +161,7 @@ class HeapTable:
+             self._publish_page(guard, page)
+             self.free_space.record(
+                 guard.key.page_id,
+-                page.contiguous_free_bytes,
++                page.available_free_bytes,
+             )
+             return TID(guard.key.page_id, slot_id)
+ 
+@@ -192,4 +195,4 @@ class HeapTable:
+             key = heap_page_key(self.table_id, page_id)
+             with self._pool.fetch_page(key) as guard:
+                 page = self._slotted_page(guard)
+-                self.free_space.record(page_id, page.contiguous_free_bytes)
++                self.free_space.record(page_id, page.available_free_bytes)
+diff --git a/src/minipostgres/storage/slotted.py b/src/minipostgres/storage/slotted.py
+index 3413829f9ee3bc9101a1914e3d8f965b8164618b..845f7b126e8c5458287c8c437b1077aefa1bc29e 100644
+--- a/src/minipostgres/storage/slotted.py
++++ b/src/minipostgres/storage/slotted.py
+@@ -104,6 +104,13 @@ class SlottedPage:
+ 
+         return self._upper - self.lower
+ 
++    @property
++    def available_free_bytes(self) -> int:
++        """Bytes available after compaction, excluding the fixed directory."""
++
++        live_bytes = sum(slot.length for slot in self._slots if slot.live)
++        return SLOTTED_BODY_SIZE - self.lower - live_bytes
++
+     def live_slots(self) -> tuple[int, ...]:
+         """Return live slot IDs in stable numeric order."""
+ 
+diff --git a/tests/integration/test_btree_restart.py b/tests/integration/test_btree_restart.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..501cc9476e7d9d7b11d34b30642d7fd355b3b324
+--- /dev/null
++++ b/tests/integration/test_btree_restart.py
+@@ -0,0 +1,49 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++from minipostgres.index.btree import BTree
++from minipostgres.index.key import KeyCodec
++from minipostgres.row import TID
++from minipostgres.storage.buffer import BufferPool
++from minipostgres.storage.disk import DiskManager
++from minipostgres.types import DataType
++
++_INT = KeyCodec((DataType.INT64,))
++
++
++def test_point_search_delete_and_range_survive_clean_restart(
++    tmp_path: Path,
++) -> None:
++    disk = DiskManager.open(tmp_path)
++    pool = BufferPool(disk, frame_count=3)
++    tree = BTree.open(pool, index_id=8)
++    for key in range(500):
++        tree.insert(_INT.encode((key,)), TID(key // 100, key % 100))
++    for key in range(0, 500, 7):
++        assert tree.delete(
++            _INT.encode((key,)),
++            TID(key // 100, key % 100),
++        )
++    expected_height = tree.height
++    pool.flush_all()
++    disk.sync_relation(tree.relation)
++    disk.close()
++
++    reopened_disk = DiskManager.open(tmp_path)
++    reopened = BTree.open(
++        BufferPool(reopened_disk, frame_count=2),
++        index_id=8,
++    )
++
++    assert reopened.height == expected_height
++    assert reopened.search(_INT.encode((7,))) == ()
++    assert reopened.search(_INT.encode((8,))) == (TID(0, 8),)
++    assert [
++        tid
++        for _, tid in reopened.range(_INT.encode((123,)), _INT.encode((321,)))
++    ] == [
++        TID(key // 100, key % 100)
++        for key in range(123, 322)
++        if key % 7
++    ]
+diff --git a/tests/integration/test_heap_table.py b/tests/integration/test_heap_table.py
+index 3bc197e0e28fb3d904da7da458444a0429e250ca..540cfd7393717d57a86a4bff9e2b8340d35dcc01 100644
+--- a/tests/integration/test_heap_table.py
++++ b/tests/integration/test_heap_table.py
+@@ -77,3 +77,16 @@ def test_heap_tids_keep_stable_slots_after_delete_and_compaction(
+     assert heap.fetch(third) == (3, "C", 40)
+     assert heap.fetch(inserted) == (4, "D" * 2_000, 50)
+ 
++
++def test_heap_reuses_space_reclaimable_by_compaction_after_delete(
++    tmp_path: Path,
++) -> None:
++    _disk, _pool, heap = _open_heap(tmp_path)
++    deleted = heap.insert((1, "x" * 7_000, 20))
++    assert deleted.page_id == 0
++    assert heap.delete(deleted)
++
++    replacement = heap.insert((2, "y" * 6_500, 30))
++
++    assert replacement.page_id == 0
++    assert heap.fetch(replacement) == (2, "y" * 6_500, 30)
+diff --git a/tests/property/test_btree_multimap.py b/tests/property/test_btree_multimap.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..db76c27172dfa77b02a8e2749e85ae29ed476615
+--- /dev/null
++++ b/tests/property/test_btree_multimap.py
+@@ -0,0 +1,50 @@
++from __future__ import annotations
++
++from collections import defaultdict
++from pathlib import Path
++from tempfile import TemporaryDirectory
++
++from hypothesis import given, settings
++from hypothesis import strategies as st
++
++from minipostgres.index.btree import BTree
++from minipostgres.index.key import KeyCodec
++from minipostgres.row import TID
++from minipostgres.storage.buffer import BufferPool
++from minipostgres.storage.disk import DiskManager
++from minipostgres.types import DataType
++
++_INT = KeyCodec((DataType.INT64,))
++_TIDS = st.builds(
++    TID,
++    page_id=st.integers(0, 100),
++    slot_id=st.integers(0, 100),
++)
++
++
++@settings(deadline=None, max_examples=30)
++@given(
++    st.lists(
++        st.tuples(st.integers(-(2**31), 2**31 - 1), _TIDS),
++        max_size=250,
++    )
++)
++def test_btree_matches_sorted_multimap(
++    entries: list[tuple[int, TID]],
++) -> None:
++    with TemporaryDirectory() as temporary:
++        disk = DiskManager.open(Path(temporary))
++        pool = BufferPool(disk, frame_count=5)
++        tree = BTree.open(pool, index_id=1)
++        model: dict[bytes, list[TID]] = defaultdict(list)
++
++        for value, tid in entries:
++            key = _INT.encode((value,))
++            tree.insert(key, tid)
++            if tid not in model[key]:
++                model[key].append(tid)
++
++        assert [(key, tree.search(key)) for key in sorted(model)] == [
++            (key, tuple(sorted(tids, key=lambda tid: (tid.page_id, tid.slot_id))))
++            for key, tids in sorted(model.items())
++        ]
+diff --git a/tests/property/test_heap_table_model.py b/tests/property/test_heap_table_model.py
+index 79950a189416ad04be0b42c927df666336b5ea22..4452ba95b96f9b38d2f32ee095f9e8c3605322dd 100644
+--- a/tests/property/test_heap_table_model.py
++++ b/tests/property/test_heap_table_model.py
+@@ -3,7 +3,7 @@ from __future__ import annotations
+ from pathlib import Path
+ from tempfile import TemporaryDirectory
+ 
+-from hypothesis import given
++from hypothesis import given, settings
+ from hypothesis import strategies as st
+ 
+ from minipostgres.catalog.model import Column, Schema, TableMetadata
+@@ -13,6 +13,7 @@ from minipostgres.storage.heap import HeapTable
+ from minipostgres.types import DataType
+ 
+ 
++@settings(deadline=None)
+ @given(
+     st.lists(
+         st.tuples(
+diff --git a/tests/property/test_key_order.py b/tests/property/test_key_order.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e4bb8874d41e10db7a472a0e1e56c3797294a04
+--- /dev/null
++++ b/tests/property/test_key_order.py
+@@ -0,0 +1,58 @@
++from __future__ import annotations
++
++from hypothesis import given
++from hypothesis import strategies as st
++
++from minipostgres.index.key import KeyCodec
++from minipostgres.types import DataType
++
++_INT_CODEC = KeyCodec((DataType.INT64,))
++_FLOAT_CODEC = KeyCodec((DataType.FLOAT64,))
++_TEXT_CODEC = KeyCodec((DataType.TEXT,))
++
++
++@given(
++    st.lists(
++        st.integers(-(2**63), 2**63 - 1),
++        max_size=100,
++        unique=True,
++    )
++)
++def test_encoded_int64_order_matches_numeric_order(values: list[int]) -> None:
++    assert sorted(values, key=lambda value: _INT_CODEC.encode((value,))) == sorted(
++        values
++    )
++
++
++@given(
++    st.lists(
++        st.floats(
++            allow_nan=False,
++            allow_infinity=True,
++            width=64,
++        ).filter(lambda value: value != 0.0),
++        max_size=100,
++        unique=True,
++    )
++)
++def test_encoded_float64_order_matches_numeric_order(values: list[float]) -> None:
++    assert sorted(
++        values,
++        key=lambda value: _FLOAT_CODEC.encode((value,)),
++    ) == sorted(values)
++
++
++@given(
++    st.lists(
++        st.text(
++            alphabet=st.characters(blacklist_categories=("Cs",)),
++            max_size=30,
++        ),
++        max_size=80,
++        unique=True,
++    )
++)
++def test_encoded_text_order_matches_unicode_order(values: list[str]) -> None:
++    assert sorted(values, key=lambda value: _TEXT_CODEC.encode((value,))) == sorted(
++        values
++    )
+diff --git a/tests/unit/index/test_btree_delete.py b/tests/unit/index/test_btree_delete.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..daca6b4a48ffe27f924e9fc0f9889578a5b33560
+--- /dev/null
++++ b/tests/unit/index/test_btree_delete.py
+@@ -0,0 +1,60 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++from minipostgres.index.btree import BTree
++from minipostgres.index.key import KeyCodec
++from minipostgres.row import TID
++from minipostgres.storage.buffer import BufferPool
++from minipostgres.storage.disk import DiskManager
++from minipostgres.types import DataType
++
++_INT = KeyCodec((DataType.INT64,))
++
++
++def _tree(tmp_path: Path) -> BTree:
++    disk = DiskManager.open(tmp_path)
++    return BTree.open(BufferPool(disk, frame_count=5), index_id=1)
++
++
++def test_delete_redistributes_merges_and_collapses_root(tmp_path: Path) -> None:
++    tree = _tree(tmp_path)
++    for key in range(300):
++        tree.insert(_INT.encode((key,)), TID(0, key))
++
++    for key in range(299):
++        assert tree.delete(_INT.encode((key,)), TID(0, key))
++
++    assert tree.height == 1
++    assert tree.search(_INT.encode((299,))) == (TID(0, 299),)
++
++
++def test_delete_removes_only_exact_key_tid_pair(tmp_path: Path) -> None:
++    tree = _tree(tmp_path)
++    key = _INT.encode((7,))
++    tids = (TID(0, 1), TID(0, 2), TID(0, 3))
++    for tid in tids:
++        tree.insert(key, tid)
++
++    assert tree.delete(key, TID(0, 2))
++    assert not tree.delete(key, TID(0, 2))
++    assert tree.search(key) == (TID(0, 1), TID(0, 3))
++
++
++def test_delete_rebalances_internal_levels_created_by_wide_keys(
++    tmp_path: Path,
++) -> None:
++    tree = _tree(tmp_path)
++    entries = [
++        (key.to_bytes(4, "big") + b"x" * 900, TID(0, key))
++        for key in range(120)
++    ]
++    for key, tid in entries:
++        tree.insert(key, tid)
++    assert tree.height >= 3
++
++    for key, tid in entries[:-1]:
++        assert tree.delete(key, tid)
++
++    assert tree.height == 1
++    assert tree.search(entries[-1][0]) == (entries[-1][1],)
+diff --git a/tests/unit/index/test_btree_insert.py b/tests/unit/index/test_btree_insert.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..47ef00517f3deb0241ca010cd7b77657d7d04a15
+--- /dev/null
++++ b/tests/unit/index/test_btree_insert.py
+@@ -0,0 +1,46 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++from minipostgres.index.btree import BTree
++from minipostgres.index.key import KeyCodec
++from minipostgres.row import TID
++from minipostgres.storage.buffer import BufferPool
++from minipostgres.storage.disk import DiskManager
++from minipostgres.types import DataType
++
++_INT = KeyCodec((DataType.INT64,))
++
++
++def _tree(tmp_path: Path) -> BTree:
++    disk = DiskManager.open(tmp_path)
++    pool = BufferPool(disk, frame_count=4)
++    return BTree.open(pool, index_id=1)
++
++
++def test_btree_root_and_leaf_split_preserve_search(tmp_path: Path) -> None:
++    tree = _tree(tmp_path)
++    inserted = [
++        (_INT.encode((key,)), TID(key // 3, key % 3)) for key in range(500)
++    ]
++
++    for key, tid in inserted:
++        tree.insert(key, tid)
++
++    assert tree.height > 1
++    for key, tid in inserted:
++        assert tid in tree.search(key)
++
++
++def test_duplicate_key_tid_insertion_is_idempotent_and_sorted(
++    tmp_path: Path,
++) -> None:
++    tree = _tree(tmp_path)
++    key = _INT.encode((7,))
++    tids = (TID(2, 3), TID(0, 9), TID(2, 3), TID(1, 1))
++
++    for tid in tids:
++        tree.insert(key, tid)
++
++    assert tree.search(key) == (TID(0, 9), TID(1, 1), TID(2, 3))
++
+diff --git a/tests/unit/index/test_btree_pages.py b/tests/unit/index/test_btree_pages.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3d0f5edd1ba0aad9c72924e63c67e381481c3449
+--- /dev/null
++++ b/tests/unit/index/test_btree_pages.py
+@@ -0,0 +1,64 @@
++from __future__ import annotations
++
++import pytest
++
++from minipostgres.errors import CorruptPage
++from minipostgres.index.pages import (
++    InternalPage,
++    LeafEntry,
++    LeafPage,
++    MetaPage,
++    decode_internal,
++    decode_leaf,
++    decode_meta,
++    encode_internal,
++    encode_leaf,
++    encode_meta,
++)
++from minipostgres.row import TID
++
++
++def test_btree_page_codecs_round_trip_all_page_kinds() -> None:
++    meta = MetaPage(root_page_id=7, height=3)
++    internal = InternalPage(keys=(b"b", b"d"), children=(1, 2, 3))
++    leaf = LeafPage(
++        entries=(
++            LeafEntry(b"a", TID(1, 2)),
++            LeafEntry(b"b", TID(3, 4)),
++        ),
++        left_sibling=None,
++        right_sibling=9,
++    )
++
++    assert decode_meta(encode_meta(meta)) == meta
++    assert decode_internal(encode_internal(internal)) == internal
++    assert decode_leaf(encode_leaf(leaf)) == leaf
++
++
++def test_btree_page_decoders_reject_unsorted_and_truncated_payloads() -> None:
++    leaf = LeafPage(
++        entries=(
++            LeafEntry(b"a", TID(0, 0)),
++            LeafEntry(b"b", TID(0, 1)),
++        ),
++        left_sibling=None,
++        right_sibling=None,
++    )
++    encoded = encode_leaf(leaf)
++
++    with pytest.raises(CorruptPage, match="truncated"):
++        decode_leaf(encoded[:-1])
++    with pytest.raises(CorruptPage, match="sorted"):
++        encode_leaf(
++            LeafPage(
++                entries=tuple(reversed(leaf.entries)),
++                left_sibling=None,
++                right_sibling=None,
++            )
++        )
++
++
++def test_internal_page_requires_one_more_child_than_separator() -> None:
++    with pytest.raises(CorruptPage, match="children"):
++        encode_internal(InternalPage(keys=(b"a",), children=(1,)))
++
+diff --git a/tests/unit/index/test_btree_range.py b/tests/unit/index/test_btree_range.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..28baa865f5547f8e87fbc0f627ce0a1c22ea34cb
+--- /dev/null
++++ b/tests/unit/index/test_btree_range.py
+@@ -0,0 +1,48 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++from minipostgres.index.btree import BTree
++from minipostgres.index.key import KeyCodec
++from minipostgres.row import TID
++from minipostgres.storage.buffer import BufferPool
++from minipostgres.storage.disk import DiskManager
++from minipostgres.storage.identifiers import btree_page_key
++from minipostgres.types import DataType
++
++_INT = KeyCodec((DataType.INT64,))
++
++
++def test_range_iterator_crosses_leaf_siblings_and_is_inclusive(
++    tmp_path: Path,
++) -> None:
++    disk = DiskManager.open(tmp_path)
++    tree = BTree.open(BufferPool(disk, frame_count=4), index_id=1)
++    for key in range(500):
++        tree.insert(_INT.encode((key,)), TID(0, key))
++
++    entries = list(tree.range(_INT.encode((123,)), _INT.encode((321,))))
++
++    assert [tid.slot_id for _, tid in entries] == list(range(123, 322))
++
++
++def test_range_iterator_releases_its_current_leaf_pin_on_close(
++    tmp_path: Path,
++) -> None:
++    disk = DiskManager.open(tmp_path)
++    pool = BufferPool(disk, frame_count=4)
++    tree = BTree.open(pool, index_id=1)
++    for key in range(500):
++        tree.insert(_INT.encode((key,)), TID(0, key))
++    iterator = tree.range(_INT.encode((100,)), _INT.encode((400,)))
++
++    next(iterator)
++    current_page_id = iterator.current_page_id
++    assert current_page_id is not None
++    key = btree_page_key(1, current_page_id)
++    assert pool.pin_count(key) == 1
++
++    iterator.close()
++
++    assert pool.pin_count(key) == 0
++
+diff --git a/tests/unit/index/test_key_codec.py b/tests/unit/index/test_key_codec.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2715e96212c702c6b4475cea2a8472ba13315392
+--- /dev/null
++++ b/tests/unit/index/test_key_codec.py
+@@ -0,0 +1,40 @@
++from __future__ import annotations
++
++import pytest
++
++from minipostgres.errors import TypeMismatch
++from minipostgres.index.key import KeyCodec
++from minipostgres.types import DataType
++
++
++def test_key_codec_preserves_scalar_and_composite_order() -> None:
++    codec = KeyCodec((DataType.INT64, DataType.TEXT))
++    values = [(-2, "z"), (1, "a"), (1, "b"), (9, "")]
++
++    assert sorted(values, key=codec.encode) == values
++
++
++def test_key_codec_orders_text_prefixes_and_embedded_nul() -> None:
++    codec = KeyCodec((DataType.TEXT,))
++    values = [("",), ("a",), ("a\x00",), ("aa",), ("雪",)]
++
++    assert sorted(values, key=codec.encode) == values
++
++
++def test_unique_index_rejects_null_key_in_frozen_scope() -> None:
++    codec = KeyCodec((DataType.INT64,))
++
++    with pytest.raises(TypeMismatch, match="NULL index key"):
++        codec.encode((None,))
++
++
++def test_key_codec_rejects_wrong_arity_type_and_nan() -> None:
++    codec = KeyCodec((DataType.INT64, DataType.FLOAT64))
++
++    with pytest.raises(TypeMismatch, match="2 components"):
++        codec.encode((1,))
++    with pytest.raises(TypeMismatch, match="INT64"):
++        codec.encode((True, 1.0))
++    with pytest.raises(TypeMismatch, match="NaN"):
++        codec.encode((1, float("nan")))
++

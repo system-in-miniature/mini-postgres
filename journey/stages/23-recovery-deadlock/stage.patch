@@ -1,0 +1,1029 @@
+diff --git a/src/minipostgres/engine.py b/src/minipostgres/engine.py
+index eeec9a03ecfc22c154cc52fce3c0280c44eb9a3c..205ababea3b614947c1f28c17efe4a1580d959eb 100644
+--- a/src/minipostgres/engine.py
++++ b/src/minipostgres/engine.py
+@@ -145,72 +145,79 @@ class Database:
+         session: DatabaseSession,
+         sql: str,
+     ) -> QueryResult:
+-        with self._lock:
+-            self._ensure_open()
+-            try:
+-                syntax = parse(sql)
+-                bound = Binder(self._catalog).bind(syntax)
+-            except BaseException:
+-                transaction = session.transaction
+-                if (
+-                    transaction is not None
+-                    and transaction.state is TransactionState.ACTIVE
+-                ):
+-                    transaction.mark_failed()
+-                raise
+-            if isinstance(bound, BoundBegin):
+-                if session.transaction is not None:
+-                    raise BindError("transaction is already active")
+-                session.transaction = self._transactions.begin(session.isolation)
+-                return QueryResult(command_tag="BEGIN")
+-            if isinstance(bound, BoundCommit):
+-                transaction = session.transaction
+-                if transaction is None:
+-                    raise BindError("COMMIT without BEGIN")
+-                transaction.require_usable()
+-                self._transactions.commit(transaction)
+-                session.transaction = None
+-                return QueryResult(command_tag="COMMIT")
+-            if isinstance(bound, BoundRollback):
+-                transaction = session.transaction
+-                if transaction is None:
+-                    raise BindError("ROLLBACK without BEGIN")
+-                self._transactions.abort(transaction)
+-                session.transaction = None
+-                return QueryResult(command_tag="ROLLBACK")
++        self._ensure_open()
++        try:
++            syntax = parse(sql)
++            bound = Binder(self._catalog).bind(syntax)
++        except BaseException:
+             transaction = session.transaction
+-            implicit = transaction is None
+-            if transaction is None:
+-                transaction = self._transactions.begin(session.isolation)
+-            else:
+-                transaction.require_usable()
+-            snapshot = self._transactions.statement_snapshot(transaction)
+-            if session.transaction is not None and isinstance(
+-                bound,
+-                (BoundCreateTable, BoundCreateIndex, BoundAnalyze),
++            if (
++                transaction is not None
++                and transaction.state is TransactionState.ACTIVE
+             ):
+                 transaction.mark_failed()
+-                raise BindError("DDL and ANALYZE are not allowed inside a transaction")
+-            self._context.configure_transaction(
+-                transaction,
+-                snapshot,
+-                self._transactions.statuses,
+-            )
+-            try:
+-                result = self._dispatch(bound, syntax)
+-            except BaseException:
+-                if implicit:
+-                    self._transactions.abort(transaction)
+-                elif transaction.state is TransactionState.ACTIVE:
+-                    transaction.mark_failed()
+-                raise
+-            finally:
+-                self._context.clear_transaction()
++            raise
++        if isinstance(bound, BoundBegin):
++            if session.transaction is not None:
++                raise BindError("transaction is already active")
++            session.transaction = self._transactions.begin(session.isolation)
++            return QueryResult(command_tag="BEGIN")
++        if isinstance(bound, BoundCommit):
++            transaction = session.transaction
++            if transaction is None:
++                raise BindError("COMMIT without BEGIN")
++            transaction.require_usable()
++            self._transactions.commit(transaction)
++            session.transaction = None
++            return QueryResult(command_tag="COMMIT")
++        if isinstance(bound, BoundRollback):
++            transaction = session.transaction
++            if transaction is None:
++                raise BindError("ROLLBACK without BEGIN")
++            self._transactions.abort(transaction)
++            session.transaction = None
++            return QueryResult(command_tag="ROLLBACK")
++        transaction = session.transaction
++        implicit = transaction is None
++        if transaction is None:
++            transaction = self._transactions.begin(session.isolation)
++        else:
++            transaction.require_usable()
++        snapshot = self._transactions.statement_snapshot(transaction)
++        if session.transaction is not None and isinstance(
++            bound,
++            (BoundCreateTable, BoundCreateIndex, BoundAnalyze),
++        ):
++            transaction.mark_failed()
++            raise BindError("DDL and ANALYZE are not allowed inside a transaction")
++        context = self._context.for_transaction(
++            transaction,
++            snapshot,
++            self._transactions.statuses,
++            self._transactions.locks,
++        )
++        try:
++            if isinstance(bound, (BoundCreateTable, BoundCreateIndex, BoundAnalyze)):
++                with self._lock:
++                    result = self._dispatch(bound, syntax, context)
++            else:
++                result = self._dispatch(bound, syntax, context)
++        except BaseException:
+             if implicit:
+-                self._transactions.commit(transaction)
+-            return result
++                self._transactions.abort(transaction)
++            elif transaction.state is TransactionState.ACTIVE:
++                transaction.mark_failed()
++            raise
++        if implicit:
++            self._transactions.commit(transaction)
++        return result
+ 
+-    def _dispatch(self, bound: BoundStatement, syntax: object) -> QueryResult:
++    def _dispatch(
++        self,
++        bound: BoundStatement,
++        syntax: object,
++        context: ExecutionContext,
++    ) -> QueryResult:
+         if isinstance(bound, BoundCreateTable):
+             return self._create_table(bound)
+         if isinstance(bound, BoundCreateIndex):
+@@ -218,14 +225,18 @@ class Database:
+         if isinstance(bound, BoundAnalyze):
+             return self._analyze(bound)
+         if isinstance(bound, BoundExplain):
+-            return self._explain(bound)
++            return self._explain(bound, context)
+         if isinstance(bound, (BoundSelect, BoundInsert, BoundUpdate, BoundDelete)):
+-            return self._execute_relational(bound)
++            return self._execute_relational(bound, context)
+         raise BindError(
+             f"{type(syntax).__name__} is reserved for a later project phase"
+         )
+ 
+-    def _explain(self, statement: BoundExplain) -> QueryResult:
++    def _explain(
++        self,
++        statement: BoundExplain,
++        context: ExecutionContext,
++    ) -> QueryResult:
+         logical = self._planner.logical(statement.statement)
+         physical = self._optimize(logical)
+         if not statement.analyze:
+@@ -234,7 +245,7 @@ class Database:
+                 plan=explain_plan(physical),
+             )
+         session = self._instrumentation_tracker.session()
+-        rows = collect(build_executor(physical, self._context, session))
++        rows = collect(build_executor(physical, context, session))
+         public_rows: tuple[tuple[Scalar, ...], ...] = ()
+         columns: tuple[str, ...] = ()
+         if isinstance(statement.statement, BoundSelect):
+@@ -399,10 +410,11 @@ class Database:
+     def _execute_relational(
+         self,
+         statement: BoundStatement,
++        context: ExecutionContext,
+     ) -> QueryResult:
+         logical = self._planner.logical(statement)
+         physical = self._optimize(logical)
+-        rows = collect(build_executor(physical, self._context))
++        rows = collect(build_executor(physical, context))
+         if isinstance(statement, BoundSelect):
+             materialized = self._materialize_select(statement, rows)
+             return QueryResult(
+diff --git a/src/minipostgres/executor/base.py b/src/minipostgres/executor/base.py
+index 89fec93c339526569c6b92b457b44e061a985230..df6b323cbbb8a3d64ab5e7cfde1ae1de951c6968 100644
+--- a/src/minipostgres/executor/base.py
++++ b/src/minipostgres/executor/base.py
+@@ -8,6 +8,7 @@ from types import TracebackType
+ 
+ from minipostgres.executor.memory import TableAccess
+ from minipostgres.row import ExecutionRow
++from minipostgres.transaction.locks import LockManager
+ from minipostgres.transaction.model import Transaction
+ from minipostgres.transaction.snapshot import Snapshot
+ from minipostgres.transaction.status import TransactionStatusTable
+@@ -23,26 +24,35 @@ class OutputSlot:
+ class ExecutionContext:
+     """Runtime dependencies shared by one executor tree."""
+ 
+-    def __init__(self, tables: dict[int, TableAccess]) -> None:
+-        self._tables = dict(tables)
+-        self.transaction: Transaction | None = None
+-        self.snapshot: Snapshot | None = None
+-        self.statuses: TransactionStatusTable | None = None
+-
+-    def configure_transaction(
++    def __init__(
+         self,
+-        transaction: Transaction,
+-        snapshot: Snapshot,
+-        statuses: TransactionStatusTable,
++        tables: dict[int, TableAccess],
++        *,
++        transaction: Transaction | None = None,
++        snapshot: Snapshot | None = None,
++        statuses: TransactionStatusTable | None = None,
++        locks: LockManager | None = None,
+     ) -> None:
++        self._tables = dict(tables)
+         self.transaction = transaction
+         self.snapshot = snapshot
+         self.statuses = statuses
++        self.locks = locks
+ 
+-    def clear_transaction(self) -> None:
+-        self.transaction = None
+-        self.snapshot = None
+-        self.statuses = None
++    def for_transaction(
++        self,
++        transaction: Transaction,
++        snapshot: Snapshot,
++        statuses: TransactionStatusTable,
++        locks: LockManager,
++    ) -> ExecutionContext:
++        return ExecutionContext(
++            self._tables,
++            transaction=transaction,
++            snapshot=snapshot,
++            statuses=statuses,
++            locks=locks,
++        )
+ 
+     def table(self, table_id: int) -> TableAccess:
+         try:
+diff --git a/src/minipostgres/executor/operators.py b/src/minipostgres/executor/operators.py
+index b31054a6d2f0a5cecbce67ccc54686371f8f5b5d..eff6f13f87be893b56d334c8dac099177e8851aa 100644
+--- a/src/minipostgres/executor/operators.py
++++ b/src/minipostgres/executor/operators.py
+@@ -23,6 +23,7 @@ from minipostgres.sql.bound import (
+     BoundSelectItem,
+ )
+ from minipostgres.storage.indexed import IndexedTableAccess
++from minipostgres.transaction.locks import LockManager
+ from minipostgres.types import Scalar
+ 
+ 
+@@ -493,9 +494,9 @@ class InsertExecutor(ModificationExecutor):
+                     assert self._context.statuses is not None
+                     inserted.append(
+                         access.insert_mvcc(
+-                            self._context.transaction.xid,
+-                            self._context.snapshot,
++                            self._context.transaction,
+                             self._context.statuses,
++                            _locks(self._context),
+                             candidate,
+                         )
+                     )
+@@ -585,9 +586,10 @@ class UpdateExecutor(ModificationExecutor):
+                     assert self._context.statuses is not None
+                     replacement = access.replace_mvcc(
+                         tid,
+-                        self._context.transaction.xid,
++                        self._context.transaction,
+                         self._context.snapshot,
+                         self._context.statuses,
++                        _locks(self._context),
+                         values,
+                     )
+                 else:
+@@ -633,8 +635,14 @@ class DeleteExecutor(ModificationExecutor):
+         access = self._context.table(self._table.table_id)
+         if _has_mvcc(self._context) and isinstance(access, IndexedTableAccess):
+             assert self._context.transaction is not None
++            assert self._context.statuses is not None
+             self._affected = sum(
+-                access.delete_mvcc(tid, self._context.transaction.xid)
++                access.delete_mvcc(
++                    tid,
++                    self._context.transaction,
++                    self._context.statuses,
++                    _locks(self._context),
++                )
+                 for tid in tids
+             )
+         else:
+@@ -646,9 +654,15 @@ def _has_mvcc(context: ExecutionContext) -> bool:
+         context.transaction is not None
+         and context.snapshot is not None
+         and context.statuses is not None
++        and context.locks is not None
+     )
+ 
+ 
++def _locks(context: ExecutionContext) -> LockManager:
++    assert context.locks is not None
++    return context.locks
++
++
+ def _drain_opened(executor: Executor) -> list[ExecutionRow]:
+     executor.open()
+     rows: list[ExecutionRow] = []
+diff --git a/src/minipostgres/storage/heap.py b/src/minipostgres/storage/heap.py
+index 7beac4546a2e2ab2a03acb52a0bffe589ff0f4bd..db90994b3d595b82b1b3f299c384d5666cad3da5 100644
+--- a/src/minipostgres/storage/heap.py
++++ b/src/minipostgres/storage/heap.py
+@@ -16,7 +16,7 @@ from minipostgres.storage.page import decode_page, encode_page
+ from minipostgres.storage.slotted import SlottedPage
+ from minipostgres.storage.tuple import SYSTEM_XID, TupleCodec, TupleVersion
+ from minipostgres.transaction.snapshot import Snapshot
+-from minipostgres.transaction.status import TransactionStatusTable
++from minipostgres.transaction.status import TransactionStatus, TransactionStatusTable
+ from minipostgres.transaction.visibility import is_visible
+ from minipostgres.types import Scalar
+ 
+@@ -122,6 +122,40 @@ class HeapTable:
+             visible_tid, visible_version = visible
+             return visible_tid, visible_version.values
+ 
++    def resolve_globally_live(
++        self,
++        tid: TID,
++        current_xid: int,
++        statuses: TransactionStatusTable,
++    ) -> tuple[TID, tuple[Scalar, ...]] | None:
++        """Resolve the newest committed-or-own version after a writer wait."""
++
++        with self._lock:
++            current: TID | None = self.root_tid(tid)
++            live: tuple[TID, TupleVersion] | None = None
++            visited: set[TID] = set()
++            while current is not None:
++                if current in visited:
++                    raise CorruptPage("tuple version chain contains a cycle")
++                visited.add(current)
++                version = self.physical_version(current)
++                if version is None:
++                    break
++                creator_committed = version.xmin in {SYSTEM_XID, current_xid} or (
++                    statuses.get(version.xmin) is TransactionStatus.COMMITTED
++                )
++                deleter_committed = version.xmax == current_xid or (
++                    version.xmax != 0
++                    and statuses.get(version.xmax) is TransactionStatus.COMMITTED
++                )
++                if creator_committed and not deleter_committed:
++                    live = (current, version)
++                current = version.next_tid
++            if live is None:
++                return None
++            live_tid, live_version = live
++            return live_tid, live_version.values
++
+     def scan_visible(
+         self,
+         snapshot: Snapshot,
+@@ -153,11 +187,15 @@ class HeapTable:
+         self,
+         tid: TID,
+         xid: int,
++        statuses: TransactionStatusTable,
+         values: tuple[Scalar, ...],
+     ) -> TID | None:
+         with self._lock:
+             old = self.physical_version(tid)
+-            if old is None or old.xmax != 0:
++            if old is None or (
++                old.xmax != 0
++                and statuses.get(old.xmax) is not TransactionStatus.ABORTED
++            ):
+                 return None
+             replacement = self.insert_version(xid, values)
+             self._set_version(
+@@ -166,10 +204,18 @@ class HeapTable:
+             )
+             return replacement
+ 
+-    def delete_version(self, tid: TID, xid: int) -> bool:
++    def delete_version(
++        self,
++        tid: TID,
++        xid: int,
++        statuses: TransactionStatusTable,
++    ) -> bool:
+         with self._lock:
+             old = self.physical_version(tid)
+-            if old is None or old.xmax != 0:
++            if old is None or (
++                old.xmax != 0
++                and statuses.get(old.xmax) is not TransactionStatus.ABORTED
++            ):
+                 return False
+             self._set_version(
+                 tid,
+@@ -202,6 +248,24 @@ class HeapTable:
+                 )
+         return iter(rows)
+ 
++    def root_tid(self, tid: TID) -> TID:
++        """Return the oldest physical member of the chain containing ``tid``."""
++
++        with self._lock:
++            predecessors = {
++                version.next_tid: candidate
++                for candidate, version in self.scan_versions()
++                if version.next_tid is not None
++            }
++            current = tid
++            visited: set[TID] = set()
++            while current in predecessors:
++                if current in visited:
++                    raise CorruptPage("tuple version chain contains a cycle")
++                visited.add(current)
++                current = predecessors[current]
++            return current
++
+     def _set_version(self, tid: TID, version: TupleVersion) -> None:
+         key = heap_page_key(self.table_id, tid.page_id)
+         with self._pool.fetch_page(key) as guard:
+diff --git a/src/minipostgres/storage/indexed.py b/src/minipostgres/storage/indexed.py
+index 372d20a290e1eba7c52c9bc1450b8ecb4f7d4702..198299289315deccfc17e97c9f834fd748e0f823 100644
+--- a/src/minipostgres/storage/indexed.py
++++ b/src/minipostgres/storage/indexed.py
+@@ -12,8 +12,14 @@ from minipostgres.index.btree import BTree
+ from minipostgres.index.key import KeyCodec
+ from minipostgres.row import TID
+ from minipostgres.storage.heap import HeapTable
++from minipostgres.transaction.locks import (
++    LockManager,
++    TupleLockKey,
++    UniqueKeyLockKey,
++)
++from minipostgres.transaction.model import Transaction
+ from minipostgres.transaction.snapshot import Snapshot
+-from minipostgres.transaction.status import TransactionStatusTable
++from minipostgres.transaction.status import TransactionStatus, TransactionStatusTable
+ from minipostgres.types import Scalar
+ 
+ 
+@@ -76,16 +82,18 @@ class IndexedTableAccess:
+ 
+     def insert_mvcc(
+         self,
+-        xid: int,
+-        snapshot: Snapshot,
++        transaction: Transaction,
+         statuses: TransactionStatusTable,
++        locks: LockManager,
+         values: tuple[Scalar, ...],
+     ) -> TID:
+         heap = self._mvcc_heap()
+         validated = self.schema.validate_row(values)
+         keys = self._keys(validated)
+-        self._check_unique_visible(keys, heap, snapshot, xid, statuses)
+-        tid = heap.insert_version(xid, validated)
++        self._acquire_unique_keys(transaction, locks, keys)
++        self._check_unique_global(keys, heap, transaction.xid, statuses)
++        tid = heap.insert_version(transaction.xid, validated)
++        transaction.has_writes = True
+         for binding, key in keys:
+             binding.tree.insert(key, tid)
+         return tid
+@@ -150,35 +158,70 @@ class IndexedTableAccess:
+     def replace_mvcc(
+         self,
+         tid: TID,
+-        xid: int,
++        transaction: Transaction,
+         snapshot: Snapshot,
+         statuses: TransactionStatusTable,
++        locks: LockManager,
+         values: tuple[Scalar, ...],
+     ) -> TID | None:
+         heap = self._mvcc_heap()
+-        visible = heap.resolve_visible(tid, snapshot, xid, statuses)
++        root_tid = heap.root_tid(tid)
++        locks.acquire(transaction, TupleLockKey(self.table_id, root_tid))
++        visible = heap.resolve_globally_live(
++            root_tid,
++            transaction.xid,
++            statuses,
++        )
+         if visible is None:
+             return None
+         visible_tid, _old_values = visible
+         validated = self.schema.validate_row(values)
+         new_keys = self._keys(validated)
+-        self._check_unique_visible(
++        self._acquire_unique_keys(transaction, locks, new_keys)
++        self._check_unique_global(
+             new_keys,
+             heap,
+-            snapshot,
+-            xid,
++            transaction.xid,
+             statuses,
+             ignored_tid=visible_tid,
+         )
+-        replacement = heap.replace_version(visible_tid, xid, validated)
++        replacement = heap.replace_version(
++            visible_tid,
++            transaction.xid,
++            statuses,
++            validated,
++        )
+         if replacement is None:
+             return None
++        transaction.has_writes = True
+         for binding, key in new_keys:
+             binding.tree.insert(key, replacement)
+         return replacement
+ 
+-    def delete_mvcc(self, tid: TID, xid: int) -> bool:
+-        return self._mvcc_heap().delete_version(tid, xid)
++    def delete_mvcc(
++        self,
++        tid: TID,
++        transaction: Transaction,
++        statuses: TransactionStatusTable,
++        locks: LockManager,
++    ) -> bool:
++        heap = self._mvcc_heap()
++        locks.acquire(
++            transaction,
++            TupleLockKey(self.table_id, heap.root_tid(tid)),
++        )
++        visible = heap.resolve_globally_live(tid, transaction.xid, statuses)
++        deleted = (
++            False
++            if visible is None
++            else heap.delete_version(
++                visible[0],
++                transaction.xid,
++                statuses,
++            )
++        )
++        transaction.has_writes |= deleted
++        return deleted
+ 
+     def delete(self, tid: TID) -> bool:
+         values = self._heap.fetch(tid)
+@@ -218,10 +261,9 @@ class IndexedTableAccess:
+                 )
+ 
+     @staticmethod
+-    def _check_unique_visible(
++    def _check_unique_global(
+         keys: tuple[tuple[IndexBinding, bytes], ...],
+         heap: HeapTable,
+-        snapshot: Snapshot,
+         xid: int,
+         statuses: TransactionStatusTable,
+         *,
+@@ -231,18 +273,46 @@ class IndexedTableAccess:
+             if not binding.metadata.unique:
+                 continue
+             for candidate in binding.tree.search(key):
+-                resolved = heap.resolve_visible(
+-                    candidate,
+-                    snapshot,
+-                    xid,
+-                    statuses,
++                if candidate == ignored_tid:
++                    continue
++                version = heap.physical_version(candidate)
++                if version is None:
++                    continue
++                creator = (
++                    TransactionStatus.IN_PROGRESS
++                    if version.xmin == xid
++                    else statuses.get(version.xmin)
+                 )
+-                if resolved is None or resolved[0] == ignored_tid:
++                if creator is TransactionStatus.ABORTED:
++                    continue
++                if version.xmax == xid:
++                    continue
++                if (
++                    version.xmax != 0
++                    and statuses.get(version.xmax) is TransactionStatus.COMMITTED
++                ):
+                     continue
+                 raise ConstraintViolation(
+                     f"unique index {binding.metadata.name} rejects duplicate key"
+                 )
+ 
++    @staticmethod
++    def _acquire_unique_keys(
++        transaction: Transaction,
++        locks: LockManager,
++        keys: tuple[tuple[IndexBinding, bytes], ...],
++    ) -> None:
++        resources = sorted(
++            (
++                UniqueKeyLockKey(binding.metadata.index_id, key)
++                for binding, key in keys
++                if binding.metadata.unique
++            ),
++            key=lambda resource: (resource.index_id, resource.encoded_key),
++        )
++        for resource in resources:
++            locks.acquire(transaction, resource)
++
+     def _mvcc_heap(self) -> HeapTable:
+         if not isinstance(self._heap, HeapTable):
+             raise TypeError("MVCC requires a persistent heap")
+diff --git a/src/minipostgres/transaction/manager.py b/src/minipostgres/transaction/manager.py
+index f86afac47ccd3458da382d50d68d8f19c746d4b1..2122169a8de1bb955033c9dd0658863e50c1c54a 100644
+--- a/src/minipostgres/transaction/manager.py
++++ b/src/minipostgres/transaction/manager.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ import threading
+ 
++from minipostgres.transaction.locks import LockManager
+ from minipostgres.transaction.model import (
+     IsolationLevel,
+     Transaction,
+@@ -16,6 +17,7 @@ class TransactionManager:
+         self._next_xid = next_xid
+         self._active: dict[int, Transaction] = {}
+         self.statuses = TransactionStatusTable()
++        self.locks = LockManager()
+         self._lock = threading.RLock()
+ 
+     @property
+@@ -56,6 +58,7 @@ class TransactionManager:
+             transaction.mark_committed()
+             self.statuses.set(transaction.xid, TransactionStatus.COMMITTED)
+             self._active.pop(transaction.xid, None)
++            self.locks.release_all(transaction)
+ 
+     def abort(self, transaction: Transaction) -> None:
+         with self._lock:
+@@ -63,6 +66,7 @@ class TransactionManager:
+                 transaction.mark_aborted()
+             self.statuses.set(transaction.xid, TransactionStatus.ABORTED)
+             self._active.pop(transaction.xid, None)
++            self.locks.release_all(transaction)
+ 
+     def active_transactions(self) -> tuple[Transaction, ...]:
+         with self._lock:
+diff --git a/src/minipostgres/wal/control_file.py b/src/minipostgres/wal/control_file.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6c46c8dcc11b6ec94518bb38d7b64444aef0c847
+--- /dev/null
++++ b/src/minipostgres/wal/control_file.py
+@@ -0,0 +1,91 @@
++"""Small checksummed control file updated through atomic replacement."""
++
++from __future__ import annotations
++
++import os
++import struct
++import zlib
++from dataclasses import dataclass
++from pathlib import Path
++
++from minipostgres.errors import CorruptWal
++
++_MAGIC = b"MPCF"
++_VERSION = 1
++_STRUCT = struct.Struct(">4sBBHQI")
++_CHECKSUM_OFFSET = _STRUCT.size - 4
++
++
++@dataclass(frozen=True, slots=True)
++class ControlState:
++    checkpoint_lsn: int
++    clean_shutdown: bool
++
++
++class ControlFile:
++    def __init__(self, path: Path) -> None:
++        self.path = Path(path)
++
++    def load(self) -> ControlState:
++        if not self.path.exists():
++            return ControlState(0, False)
++        encoded = self.path.read_bytes()
++        if len(encoded) != _STRUCT.size:
++            raise CorruptWal("invalid control file length")
++        magic, version, clean, reserved, checkpoint_lsn, stored_crc = (
++            _STRUCT.unpack(encoded)
++        )
++        mutable = bytearray(encoded)
++        mutable[_CHECKSUM_OFFSET:] = b"\x00" * 4
++        if (
++            magic != _MAGIC
++            or version != _VERSION
++            or clean not in {0, 1}
++            or reserved != 0
++            or zlib.crc32(mutable) & 0xFFFFFFFF != stored_crc
++        ):
++            raise CorruptWal("control file checksum or header is invalid")
++        return ControlState(checkpoint_lsn, bool(clean))
++
++    def store(self, state: ControlState) -> None:
++        self.path.parent.mkdir(parents=True, exist_ok=True)
++        encoded = bytearray(
++            _STRUCT.pack(
++                _MAGIC,
++                _VERSION,
++                int(state.clean_shutdown),
++                0,
++                state.checkpoint_lsn,
++                0,
++            )
++        )
++        encoded[_CHECKSUM_OFFSET:] = (
++            zlib.crc32(encoded) & 0xFFFFFFFF
++        ).to_bytes(4, "big")
++        temporary = self.path.with_name(f".{self.path.name}.tmp")
++        descriptor = os.open(
++            temporary,
++            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
++            0o600,
++        )
++        try:
++            _write_all(descriptor, encoded)
++            os.fsync(descriptor)
++        finally:
++            os.close(descriptor)
++        os.replace(temporary, self.path)
++        directory = os.open(self.path.parent, os.O_RDONLY)
++        try:
++            os.fsync(directory)
++        finally:
++            os.close(directory)
++
++
++def _write_all(descriptor: int, data: bytes | bytearray) -> None:
++    written = 0
++    while written < len(data):
++        count = os.write(descriptor, data[written:])
++        if count <= 0:
++            raise OSError("short control-file write")
++        written += count
++
+diff --git a/src/minipostgres/wal/recovery.py b/src/minipostgres/wal/recovery.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3908c06abfbd3ef83100c89588787092bc4332c3
+--- /dev/null
++++ b/src/minipostgres/wal/recovery.py
+@@ -0,0 +1,66 @@
++"""REDO full-page images and reconstruct transaction outcomes."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++
++from minipostgres.errors import CorruptPage
++from minipostgres.storage.disk import DiskManager
++from minipostgres.storage.page import decode_page
++from minipostgres.transaction.status import (
++    TransactionStatus,
++    TransactionStatusTable,
++)
++from minipostgres.wal.manager import WalManager
++from minipostgres.wal.records import (
++    AbortRecord,
++    BeginRecord,
++    CommitRecord,
++    HeapPageImagesRecord,
++)
++
++
++@dataclass(frozen=True, slots=True)
++class RecoveryResult:
++    statuses: TransactionStatusTable
++    next_xid: int
++    redone_pages: int
++
++
++def recover(
++    wal: WalManager,
++    disk: DiskManager,
++    *,
++    start_lsn: int = 0,
++) -> RecoveryResult:
++    statuses = TransactionStatusTable()
++    begun: set[int] = set()
++    maximum_xid = 1
++    redone = 0
++    for entry in wal.scan(start_lsn):
++        maximum_xid = max(maximum_xid, entry.xid)
++        record = entry.record
++        if isinstance(record, BeginRecord):
++            begun.add(entry.xid)
++        elif isinstance(record, CommitRecord):
++            statuses.set(entry.xid, TransactionStatus.COMMITTED)
++        elif isinstance(record, AbortRecord):
++            statuses.set(entry.xid, TransactionStatus.ABORTED)
++        elif isinstance(record, HeapPageImagesRecord):
++            for key, image in record.images:
++                decoded_image = decode_page(key, image)
++                while disk.page_count(key.relation) <= key.page_id:
++                    disk.allocate_page(key.relation, decoded_image.kind)
++                needs_redo = False
++                try:
++                    current = decode_page(key, disk.read_page(key))
++                    needs_redo = current.page_lsn < decoded_image.page_lsn
++                except CorruptPage:
++                    needs_redo = True
++                if needs_redo:
++                    disk.write_page(key, image)
++                    redone += 1
++    for xid in begun:
++        if statuses.get(xid) is TransactionStatus.IN_PROGRESS:
++            statuses.set(xid, TransactionStatus.ABORTED)
++    return RecoveryResult(statuses, maximum_xid + 1, redone)
+diff --git a/tests/concurrency/test_deadlock.py b/tests/concurrency/test_deadlock.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8c36ab4504e4bc9438d4ae906c08ed0c593b0f1d
+--- /dev/null
++++ b/tests/concurrency/test_deadlock.py
+@@ -0,0 +1,35 @@
++from concurrent.futures import ThreadPoolExecutor
++
++import pytest
++
++from minipostgres.engine import Database
++from minipostgres.errors import DeadlockDetected
++
++
++def test_two_row_deadlock_aborts_highest_xid(engine: Database) -> None:
++    engine.execute("CREATE TABLE accounts (id INT PRIMARY KEY, value INT)")
++    engine.execute("INSERT INTO accounts VALUES (1, 10), (2, 20)")
++    low = engine.session()
++    high = engine.session()
++    low.execute("BEGIN")
++    high.execute("BEGIN")
++    assert low.transaction is not None
++    assert high.transaction is not None
++    assert low.transaction.xid < high.transaction.xid
++
++    low.execute("UPDATE accounts SET value = 11 WHERE id = 1")
++    high.execute("UPDATE accounts SET value = 21 WHERE id = 2")
++    with ThreadPoolExecutor(max_workers=1) as pool:
++        low_wait = pool.submit(
++            low.execute,
++            "UPDATE accounts SET value = 22 WHERE id = 2",
++        )
++        with pytest.raises(DeadlockDetected):
++            high.execute("UPDATE accounts SET value = 12 WHERE id = 1")
++        high.execute("ROLLBACK")
++        assert low_wait.result(timeout=2).command_tag == "UPDATE 1"
++
++    low.execute("COMMIT")
++    assert engine.execute(
++        "SELECT id, value FROM accounts ORDER BY id"
++    ).rows == ((1, 11), (2, 22))
+diff --git a/tests/concurrency/test_unique_conflicts.py b/tests/concurrency/test_unique_conflicts.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..51465bd6dd1278beb8ca72b7995a81299c5251ca
+--- /dev/null
++++ b/tests/concurrency/test_unique_conflicts.py
+@@ -0,0 +1,29 @@
++from concurrent.futures import ThreadPoolExecutor
++
++import pytest
++
++from minipostgres.engine import Database
++from minipostgres.errors import ConstraintViolation
++
++
++def test_unique_key_wait_rechecks_committed_conflict(engine: Database) -> None:
++    engine.execute("CREATE TABLE users (id INT PRIMARY KEY, name TEXT)")
++    first = engine.session()
++    second = engine.session()
++    first.execute("BEGIN")
++    second.execute("BEGIN")
++    first.execute("INSERT INTO users VALUES (7, 'first')")
++
++    with ThreadPoolExecutor(max_workers=1) as pool:
++        pending = pool.submit(
++            second.execute,
++            "INSERT INTO users VALUES (7, 'second')",
++        )
++        first.execute("COMMIT")
++        with pytest.raises(ConstraintViolation):
++            pending.result(timeout=2)
++
++    second.execute("ROLLBACK")
++    assert engine.execute("SELECT name FROM users WHERE id = 7").rows == (
++        ("first",),
++    )
+diff --git a/tests/concurrency/test_write_conflicts.py b/tests/concurrency/test_write_conflicts.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d5ac5cfa3f06d2b94f3719f81e849834b3c3a02b
+--- /dev/null
++++ b/tests/concurrency/test_write_conflicts.py
+@@ -0,0 +1,26 @@
++from concurrent.futures import ThreadPoolExecutor
++
++from minipostgres.engine import Database
++
++
++def test_tuple_writer_waits_then_updates_latest_version(engine: Database) -> None:
++    engine.execute("CREATE TABLE counters (id INT PRIMARY KEY, value INT)")
++    engine.execute("INSERT INTO counters VALUES (1, 10)")
++    first = engine.session()
++    second = engine.session()
++    first.execute("BEGIN")
++    second.execute("BEGIN")
++    first.execute("UPDATE counters SET value = 11 WHERE id = 1")
++
++    with ThreadPoolExecutor(max_workers=1) as pool:
++        pending = pool.submit(
++            second.execute,
++            "UPDATE counters SET value = 12 WHERE id = 1",
++        )
++        first.execute("COMMIT")
++        assert pending.result(timeout=2).command_tag == "UPDATE 1"
++
++    second.execute("COMMIT")
++    assert engine.execute("SELECT value FROM counters WHERE id = 1").rows == (
++        (12,),
++    )
+diff --git a/tests/unit/wal/test_control_file.py b/tests/unit/wal/test_control_file.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..aa687465a3a106a50af4311c005b2b45ee8ae564
+--- /dev/null
++++ b/tests/unit/wal/test_control_file.py
+@@ -0,0 +1,24 @@
++from __future__ import annotations
++
++import pytest
++
++from minipostgres.errors import CorruptWal
++from minipostgres.wal.control_file import ControlFile, ControlState
++
++
++def test_control_file_is_checksumming_and_atomically_replaceable(tmp_path) -> None:
++    control = ControlFile(tmp_path / "control")
++    expected = ControlState(checkpoint_lsn=123, clean_shutdown=True)
++    control.store(expected)
++    assert control.load() == expected
++
++    raw = bytearray(control.path.read_bytes())
++    raw[-1] ^= 0xFF
++    control.path.write_bytes(raw)
++    with pytest.raises(CorruptWal, match="control"):
++        control.load()
++
++
++def test_missing_control_file_starts_from_zero(tmp_path) -> None:
++    assert ControlFile(tmp_path / "control").load() == ControlState(0, False)
++
+diff --git a/tests/unit/wal/test_recovery.py b/tests/unit/wal/test_recovery.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3a3c28eb35516959da587e3719bb929aae819088
+--- /dev/null
++++ b/tests/unit/wal/test_recovery.py
+@@ -0,0 +1,57 @@
++from __future__ import annotations
++
++from minipostgres.storage.constants import PageKind
++from minipostgres.storage.disk import DiskManager
++from minipostgres.storage.identifiers import heap_page_key, heap_relation
++from minipostgres.storage.page import decode_page, encode_page
++from minipostgres.transaction.status import TransactionStatus
++from minipostgres.wal.manager import WalManager
++from minipostgres.wal.records import (
++    BeginRecord,
++    CommitRecord,
++    HeapPageImagesRecord,
++)
++from minipostgres.wal.recovery import recover
++
++
++def test_recovery_redoes_newer_page_images_and_aborts_incomplete_xids(
++    tmp_path,
++) -> None:
++    disk = DiskManager.open(tmp_path)
++    key = disk.allocate_page(heap_relation(4), PageKind.HEAP)
++    wal = WalManager.open(tmp_path / "wal.log")
++    wal.append(7, BeginRecord())
++    image_lsn = wal.end_lsn
++    image = encode_page(key, PageKind.HEAP, image_lsn, b"committed")
++    wal.append(7, HeapPageImagesRecord(((key, image),)))
++    wal.append(7, CommitRecord())
++    wal.append(8, BeginRecord())
++    wal.flush()
++
++    result = recover(wal, disk)
++
++    assert result.statuses.get(7) is TransactionStatus.COMMITTED
++    assert result.statuses.get(8) is TransactionStatus.ABORTED
++    assert result.next_xid == 9
++    assert decode_page(key, disk.read_page(key)).body == b"committed"
++    wal.close()
++    disk.close()
++
++
++def test_recovery_allocates_a_missing_page_from_a_full_image(tmp_path) -> None:
++    disk = DiskManager.open(tmp_path)
++    key = heap_page_key(9, 0)
++    wal = WalManager.open(tmp_path / "wal.log")
++    wal.append(
++        3,
++        HeapPageImagesRecord(
++            ((key, encode_page(key, PageKind.HEAP, 1, b"restored")),)
++        ),
++    )
++    wal.flush()
++
++    recover(wal, disk)
++
++    assert decode_page(key, disk.read_page(key)).body == b"restored"
++    wal.close()
++    disk.close()

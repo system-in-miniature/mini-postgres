@@ -1,0 +1,4 @@
+tests/concurrency/test_unique_conflicts.py
+tests/concurrency/test_write_conflicts.py
+tests/unit/wal/test_control_file.py
+tests/unit/wal/test_recovery.py

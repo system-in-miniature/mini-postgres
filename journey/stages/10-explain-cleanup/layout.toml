@@ -1,0 +1,9 @@
+failure_files = ["tests/contract/test_explain.py", "tests/integration/test_executor_cleanup.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Explain and executor cleanup mechanism"
+title_zh = "Explain 与 Executor 清理机制"
+summary_en = "Explain reports the selected tree while every success or failure path closes owned resources."
+summary_zh = "Explain 报告选定的 Tree，所有成功或失败路径都关闭所拥有资源。"
+files = ["src/minipostgres/engine.py", "src/minipostgres/executor/base.py", "src/minipostgres/planner/physical.py"]

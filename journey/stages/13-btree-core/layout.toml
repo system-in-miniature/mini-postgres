@@ -1,0 +1,18 @@
+failure_files = ["tests/integration/test_btree_restart.py", "tests/integration/test_heap_table.py", "tests/property/test_btree_multimap.py", "tests/property/test_heap_table_model.py", "tests/property/test_key_order.py", "tests/unit/index/test_btree_delete.py", "tests/unit/index/test_btree_insert.py", "tests/unit/index/test_btree_pages.py", "tests/unit/index/test_btree_range.py", "tests/unit/index/test_key_codec.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Persistent BTree core mechanism"
+title_zh = "持久 BTree 核心机制"
+summary_en = "Tree mutations preserve ordering, occupancy, parent links, and duplicate-key ownership."
+summary_zh = "Tree Mutation 保持顺序、占用率、父链接与重复 Key 所有权。"
+files = ["src/minipostgres/index/btree.py", "src/minipostgres/index/iterator.py", "src/minipostgres/index/key.py", "src/minipostgres/index/pages.py", "src/minipostgres/storage/heap.py", "src/minipostgres/storage/slotted.py"]
+
+[[blocks]]
+id = "supporting"
+title_en = "Package, fixture, and project support"
+title_zh = "包、Fixture 与工程支撑"
+summary_en = "Keep exports, test corpora, dependencies, and the runtime environment reproducible."
+summary_zh = "保持包导出、测试语料、依赖与运行环境可复现。"
+files = ["src/minipostgres/index/__init__.py"]
+supporting = true

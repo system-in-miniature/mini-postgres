@@ -1,0 +1,2 @@
+tests/unit/wal/test_manager.py
+tests/unit/wal/test_records.py

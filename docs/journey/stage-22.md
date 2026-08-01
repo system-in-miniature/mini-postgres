@@ -1,0 +1,626 @@
+# Stage 22 · Checksummed WAL records
+
+### Goal
+
+Build checksummed wal records and explain its boundary from an executable counterexample, runtime state, and the critical statement.
+
+??? note "Deliverable files"
+    - `src/minipostgres/wal/__init__.py`
+    - `src/minipostgres/wal/manager.py`
+    - `src/minipostgres/wal/records.py`
+    - `tests/unit/wal/test_manager.py`
+    - `tests/unit/wal/test_records.py`
+
+### The problem at this point
+
+Transaction durability needs ordered, typed, checksummed records before data pages may become durable.
+
+### Test contract
+
+#### See the failure first
+
+The focused tests force checksummed wal records through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
+
+??? note "File diff: tests/unit/wal/test_manager.py"
+    ```diff
+    diff --git a/tests/unit/wal/test_manager.py b/tests/unit/wal/test_manager.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..28618907c33554a7a5dbb18e5bfe4da98fff81f2
+    --- /dev/null
+    +++ b/tests/unit/wal/test_manager.py
+    @@ -0,0 +1,62 @@
+    +from __future__ import annotations
+    +
+    +import os
+    +
+    +import pytest
+    +
+    +from minipostgres.errors import MiniPostgresError
+    +from minipostgres.wal.manager import WalManager
+    +from minipostgres.wal.records import AbortRecord, BeginRecord, CommitRecord
+    +
+    +
+    +def test_append_flush_and_reopen_preserve_monotonic_lsn(tmp_path) -> None:
+    +    path = tmp_path / "wal.log"
+    +    wal = WalManager.open(path)
+    +    first = wal.append(3, BeginRecord())
+    +    second = wal.append(3, CommitRecord())
+    +    assert first < second
+    +    assert wal.flushed_lsn < wal.end_lsn
+    +    wal.flush(wal.end_lsn)
+    +    assert wal.flushed_lsn == wal.end_lsn
+    +    wal.close()
+    +
+    +    reopened = WalManager.open(path)
+    +    assert [entry.record for entry in reopened.scan()] == [
+    +        BeginRecord(),
+    +        CommitRecord(),
+    +    ]
+    +    assert reopened.end_lsn > second
+    +    reopened.close()
+    +
+    +
+    +def test_scan_truncates_an_incomplete_tail(tmp_path) -> None:
+    +    path = tmp_path / "wal.log"
+    +    wal = WalManager.open(path)
+    +    wal.append(4, BeginRecord())
+    +    wal.append(4, CommitRecord())
+    +    valid_end = wal.end_lsn
+    +    wal.close()
+    +    with path.open("ab") as stream:
+    +        stream.write(b"partial")
+    +
+    +    reopened = WalManager.open(path)
+    +    assert reopened.end_lsn == valid_end
+    +    assert os.path.getsize(path) == valid_end
+    +    reopened.close()
+    +
+    +
+    +def test_scan_rejects_corruption_before_a_later_record(tmp_path) -> None:
+    +    path = tmp_path / "wal.log"
+    +    wal = WalManager.open(path)
+    +    wal.append(5, BeginRecord())
+    +    second = wal.append(5, CommitRecord())
+    +    wal.append(5, AbortRecord())
+    +    wal.close()
+    +    with path.open("r+b") as stream:
+    +        stream.seek(second + 12)
+    +        byte = stream.read(1)
+    +        stream.seek(second + 12)
+    +        stream.write(bytes([byte[0] ^ 0xFF]))
+    +
+    +    with pytest.raises(MiniPostgresError, match="WAL"):
+    +        WalManager.open(path)
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The focused tests force checksummed wal records through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
+
+**Key test statement**
+
+```python
+assert first < second
+```
+
+This assertion binds the observable result to the Stage's state, visibility, or durability boundary rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the semantic, ordering, ownership, or recovery boundary just introduced.
+
+??? note "File diff: tests/unit/wal/test_records.py"
+    ```diff
+    diff --git a/tests/unit/wal/test_records.py b/tests/unit/wal/test_records.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..b0d3aae419cc4f7ca60ef4c016144b92ae26f162
+    --- /dev/null
+    +++ b/tests/unit/wal/test_records.py
+    @@ -0,0 +1,33 @@
+    +from __future__ import annotations
+    +
+    +from minipostgres.storage.constants import PAGE_SIZE
+    +from minipostgres.storage.identifiers import PageKey, heap_relation
+    +from minipostgres.wal.records import (
+    +    AbortRecord,
+    +    BeginRecord,
+    +    CheckpointRecord,
+    +    CommitRecord,
+    +    HeapPageImagesRecord,
+    +    decode_record,
+    +    encode_record,
+    +)
+    +
+    +
+    +def test_wal_record_codec_round_trips_every_record_kind() -> None:
+    +    key = PageKey(heap_relation(7), 3)
+    +    records = (
+    +        BeginRecord(),
+    +        HeapPageImagesRecord(((key, b"x" * PAGE_SIZE),)),
+    +        CommitRecord(),
+    +        AbortRecord(),
+    +        CheckpointRecord(41),
+    +    )
+    +
+    +    for record in records:
+    +        encoded = encode_record(17, 9, record)
+    +        decoded = decode_record(encoded)
+    +        assert decoded.lsn == 17
+    +        assert decoded.xid == 9
+    +        assert decoded.record == record
+    +        assert decoded.end_lsn == 17 + len(encoded)
+    +
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The focused tests force checksummed wal records through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
+
+**Key test statement**
+
+```python
+assert first < second
+```
+
+This assertion binds the observable result to the Stage's state, visibility, or durability boundary rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the semantic, ordering, ownership, or recovery boundary just introduced.
+
+### Basic concepts
+
+The central mechanism is checksummed wal records. Transaction durability needs ordered, typed, checksummed records before data pages may become durable.
+
+### Why this mechanism is necessary
+
+Transaction durability needs ordered, typed, checksummed records before data pages may become durable. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+
+### Runtime mental model
+
+LSNs are monotonic and a record is visible only after its complete frame is flushed.
+
+### Mechanism blocks
+
+#### Checksummed WAL records mechanism
+
+LSNs are monotonic and a record is visible only after its complete frame is flushed.
+
+??? note "File diff: src/minipostgres/wal/manager.py"
+    ```diff
+    diff --git a/src/minipostgres/wal/manager.py b/src/minipostgres/wal/manager.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..8ead540846ef39a06aa84f43ed30da3ed8b56dd5
+    --- /dev/null
+    +++ b/src/minipostgres/wal/manager.py
+    @@ -0,0 +1,140 @@
+    +"""Append, durability, and repair policy for the WAL byte stream."""
+    +
+    +from __future__ import annotations
+    +
+    +import os
+    +import threading
+    +from pathlib import Path
+    +
+    +from minipostgres.errors import CorruptWal
+    +from minipostgres.wal.records import (
+    +    HEADER_SIZE,
+    +    DecodedWalRecord,
+    +    WalRecord,
+    +    decode_record,
+    +    encode_record,
+    +    record_length_from_header,
+    +)
+    +
+    +
+    +class WalManager:
+    +    def __init__(
+    +        self,
+    +        path: Path,
+    +        descriptor: int,
+    +        entries: list[DecodedWalRecord],
+    +        end_lsn: int,
+    +    ) -> None:
+    +        self.path = path
+    +        self._descriptor = descriptor
+    +        self._entries = entries
+    +        self._end_lsn = end_lsn
+    +        self._flushed_lsn = 0
+    +        self._closed = False
+    +        self._lock = threading.RLock()
+    +
+    +    @classmethod
+    +    def open(cls, path: Path) -> WalManager:
+    +        path = Path(path)
+    +        path.parent.mkdir(parents=True, exist_ok=True)
+    +        descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    +        try:
+    +            entries, valid_end = cls._scan_descriptor(descriptor)
+    +            size = os.fstat(descriptor).st_size
+    +            if valid_end != size:
+    +                os.ftruncate(descriptor, valid_end)
+    +                os.fsync(descriptor)
+    +            manager = cls(path, descriptor, entries, valid_end)
+    +            manager._flushed_lsn = valid_end
+    +            return manager
+    +        except BaseException:
+    +            os.close(descriptor)
+    +            raise
+    +
+    +    @property
+    +    def end_lsn(self) -> int:
+    +        with self._lock:
+    +            return self._end_lsn
+    +
+    +    @property
+    +    def flushed_lsn(self) -> int:
+    +        with self._lock:
+    +            return self._flushed_lsn
+    +
+    +    def append(self, xid: int, record: WalRecord) -> int:
+    +        with self._lock:
+    +            self._ensure_open()
+    +            lsn = self._end_lsn
+    +            encoded = encode_record(lsn, xid, record)
+    +            self._pwrite_all(encoded, lsn)
+    +            decoded = decode_record(encoded)
+    +            self._entries.append(decoded)
+    +            self._end_lsn = decoded.end_lsn
+    +            return lsn
+    +
+    +    def flush(self, required_lsn: int | None = None) -> None:
+    +        """Make the stream durable through the record starting at required_lsn."""
+    +
+    +        with self._lock:
+    +            self._ensure_open()
+    +            if required_lsn is not None and required_lsn > self._end_lsn:
+    +                raise ValueError("cannot flush beyond the WAL end")
+    +            if self._flushed_lsn < self._end_lsn:
+    +                os.fsync(self._descriptor)
+    +                self._flushed_lsn = self._end_lsn
+    +
+    +    def scan(self, start_lsn: int = 0) -> tuple[DecodedWalRecord, ...]:
+    +        with self._lock:
+    +            self._ensure_open()
+    +            return tuple(entry for entry in self._entries if entry.lsn >= start_lsn)
+    +
+    +    def close(self) -> None:
+    +        with self._lock:
+    +            if self._closed:
+    +                return
+    +            os.close(self._descriptor)
+    +            self._closed = True
+    +
+    +    def _ensure_open(self) -> None:
+    +        if self._closed:
+    +            raise RuntimeError("WAL manager is closed")
+    +
+    +    def _pwrite_all(self, data: bytes, offset: int) -> None:
+    +        written = 0
+    +        while written < len(data):
+    +            count = os.pwrite(self._descriptor, data[written:], offset + written)
+    +            if count <= 0:
+    +                raise OSError("short WAL write")
+    +            written += count
+    +
+    +    @staticmethod
+    +    def _scan_descriptor(
+    +        descriptor: int,
+    +    ) -> tuple[list[DecodedWalRecord], int]:
+    +        size = os.fstat(descriptor).st_size
+    +        cursor = 0
+    +        entries: list[DecodedWalRecord] = []
+    +        while cursor < size:
+    +            if size - cursor < HEADER_SIZE:
+    +                break
+    +            header = os.pread(descriptor, HEADER_SIZE, cursor)
+    +            try:
+    +                total_length = record_length_from_header(header)
+    +            except CorruptWal:
+    +                if cursor + HEADER_SIZE == size:
+    +                    break
+    +                raise
+    +            if cursor + total_length > size:
+    +                break
+    +            encoded = os.pread(descriptor, total_length, cursor)
+    +            try:
+    +                entry = decode_record(encoded)
+    +            except CorruptWal:
+    +                if cursor + total_length == size:
+    +                    break
+    +                raise
+    +            if entry.lsn != cursor:
+    +                raise CorruptWal("WAL record LSN does not match file position")
+    +            entries.append(entry)
+    +            cursor += total_length
+    +        return entries, cursor
+    ```
+
+??? note "File diff: src/minipostgres/wal/records.py"
+    ```diff
+    diff --git a/src/minipostgres/wal/records.py b/src/minipostgres/wal/records.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..74c4be025c7b079957776c3b02732cfc7a1669b9
+    --- /dev/null
+    +++ b/src/minipostgres/wal/records.py
+    @@ -0,0 +1,218 @@
+    +"""Binary, checksummed WAL record codec."""
+    +
+    +from __future__ import annotations
+    +
+    +import struct
+    +import zlib
+    +from dataclasses import dataclass
+    +from enum import IntEnum
+    +
+    +from minipostgres.errors import CorruptWal
+    +from minipostgres.storage.constants import PAGE_SIZE
+    +from minipostgres.storage.identifiers import ForkKind, PageKey, RelationId
+    +
+    +_MAGIC = b"MPWL"
+    +_VERSION = 1
+    +# magic, version, kind, flags, record length, lsn, xid, payload length, crc32
+    +_HEADER = struct.Struct(">4sBBHIQQII")
+    +_PAGE_IMAGE_HEADER = struct.Struct(">BQQ")
+    +_COUNT = struct.Struct(">I")
+    +_LSN = struct.Struct(">Q")
+    +_CHECKSUM_OFFSET = _HEADER.size - 4
+    +
+    +
+    +class RecordKind(IntEnum):
+    +    BEGIN = 1
+    +    HEAP_PAGE_IMAGES = 2
+    +    COMMIT = 3
+    +    ABORT = 4
+    +    CHECKPOINT = 5
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class BeginRecord:
+    +    pass
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class HeapPageImagesRecord:
+    +    images: tuple[tuple[PageKey, bytes], ...]
+    +
+    +    def __post_init__(self) -> None:
+    +        if not self.images:
+    +            raise ValueError("page-image record cannot be empty")
+    +        if any(len(image) != PAGE_SIZE for _, image in self.images):
+    +            raise ValueError("WAL page images must be complete physical pages")
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class CommitRecord:
+    +    pass
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class AbortRecord:
+    +    pass
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class CheckpointRecord:
+    +    redo_lsn: int
+    +
+    +
+    +type WalRecord = (
+    +    BeginRecord
+    +    | HeapPageImagesRecord
+    +    | CommitRecord
+    +    | AbortRecord
+    +    | CheckpointRecord
+    +)
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class DecodedWalRecord:
+    +    lsn: int
+    +    end_lsn: int
+    +    xid: int
+    +    record: WalRecord
+    +
+    +
+    +def _kind(record: WalRecord) -> RecordKind:
+    +    if isinstance(record, BeginRecord):
+    +        return RecordKind.BEGIN
+    +    if isinstance(record, HeapPageImagesRecord):
+    +        return RecordKind.HEAP_PAGE_IMAGES
+    +    if isinstance(record, CommitRecord):
+    +        return RecordKind.COMMIT
+    +    if isinstance(record, AbortRecord):
+    +        return RecordKind.ABORT
+    +    return RecordKind.CHECKPOINT
+    +
+    +
+    +def _payload(record: WalRecord) -> bytes:
+    +    if isinstance(record, HeapPageImagesRecord):
+    +        chunks = [_COUNT.pack(len(record.images))]
+    +        for key, image in record.images:
+    +            chunks.append(
+    +                _PAGE_IMAGE_HEADER.pack(
+    +                    int(key.relation.fork),
+    +                    key.relation.object_id,
+    +                    key.page_id,
+    +                )
+    +            )
+    +            chunks.append(image)
+    +        return b"".join(chunks)
+    +    if isinstance(record, CheckpointRecord):
+    +        return _LSN.pack(record.redo_lsn)
+    +    return b""
+    +
+    +
+    +def encode_record(lsn: int, xid: int, record: WalRecord) -> bytes:
+    +    payload = _payload(record)
+    +    total_length = _HEADER.size + len(payload)
+    +    header = _HEADER.pack(
+    +        _MAGIC,
+    +        _VERSION,
+    +        int(_kind(record)),
+    +        0,
+    +        total_length,
+    +        lsn,
+    +        xid,
+    +        len(payload),
+    +        0,
+    +    )
+    +    encoded = bytearray(header + payload)
+    +    checksum = zlib.crc32(encoded) & 0xFFFFFFFF
+    +    encoded[_CHECKSUM_OFFSET : _CHECKSUM_OFFSET + 4] = checksum.to_bytes(4, "big")
+    +    return bytes(encoded)
+    +
+    +
+    +def record_length_from_header(header: bytes) -> int:
+    +    if len(header) != _HEADER.size:
+    +        raise CorruptWal("incomplete WAL header")
+    +    magic, version, _, flags, total_length, _, _, payload_length, _ = (
+    +        _HEADER.unpack(header)
+    +    )
+    +    if magic != _MAGIC or version != _VERSION or flags != 0:
+    +        raise CorruptWal("invalid WAL header")
+    +    if total_length != _HEADER.size + payload_length:
+    +        raise CorruptWal("inconsistent WAL record length")
+    +    return total_length
+    +
+    +
+    +def decode_record(encoded: bytes) -> DecodedWalRecord:
+    +    if len(encoded) < _HEADER.size:
+    +        raise CorruptWal("incomplete WAL record")
+    +    (
+    +        magic,
+    +        version,
+    +        kind_value,
+    +        flags,
+    +        total_length,
+    +        lsn,
+    +        xid,
+    +        payload_length,
+    +        stored_checksum,
+    +    ) = _HEADER.unpack_from(encoded)
+    +    if magic != _MAGIC or version != _VERSION or flags != 0:
+    +        raise CorruptWal("invalid WAL record header")
+    +    if total_length != len(encoded) or payload_length != len(encoded) - _HEADER.size:
+    +        raise CorruptWal("invalid WAL record length")
+    +    checksum_input = bytearray(encoded)
+    +    checksum_input[_CHECKSUM_OFFSET : _CHECKSUM_OFFSET + 4] = b"\x00" * 4
+    +    if zlib.crc32(checksum_input) & 0xFFFFFFFF != stored_checksum:
+    +        raise CorruptWal("WAL record checksum mismatch")
+    +    try:
+    +        kind = RecordKind(kind_value)
+    +    except ValueError as error:
+    +        raise CorruptWal("unknown WAL record kind") from error
+    +    payload = encoded[_HEADER.size:]
+    +    record = _decode_payload(kind, payload)
+    +    return DecodedWalRecord(lsn, lsn + total_length, xid, record)
+    +
+    +
+    +def _decode_payload(kind: RecordKind, payload: bytes) -> WalRecord:
+    +    if kind is RecordKind.BEGIN:
+    +        _require_empty(payload)
+    +        return BeginRecord()
+    +    if kind is RecordKind.COMMIT:
+    +        _require_empty(payload)
+    +        return CommitRecord()
+    +    if kind is RecordKind.ABORT:
+    +        _require_empty(payload)
+    +        return AbortRecord()
+    +    if kind is RecordKind.CHECKPOINT:
+    +        if len(payload) != _LSN.size:
+    +            raise CorruptWal("invalid checkpoint payload")
+    +        return CheckpointRecord(_LSN.unpack(payload)[0])
+    +    if len(payload) < _COUNT.size:
+    +        raise CorruptWal("invalid page-image payload")
+    +    count = _COUNT.unpack_from(payload)[0]
+    +    cursor = _COUNT.size
+    +    images: list[tuple[PageKey, bytes]] = []
+    +    for _ in range(count):
+    +        end_header = cursor + _PAGE_IMAGE_HEADER.size
+    +        end_image = end_header + PAGE_SIZE
+    +        if end_image > len(payload):
+    +            raise CorruptWal("truncated page image")
+    +        fork_value, object_id, page_id = _PAGE_IMAGE_HEADER.unpack(
+    +            payload[cursor:end_header]
+    +        )
+    +        try:
+    +            fork = ForkKind(fork_value)
+    +        except ValueError as error:
+    +            raise CorruptWal("invalid page-image fork") from error
+    +        key = PageKey(RelationId(fork, object_id), page_id)
+    +        images.append((key, payload[end_header:end_image]))
+    +        cursor = end_image
+    +    if cursor != len(payload) or not images:
+    +        raise CorruptWal("invalid page-image payload length")
+    +    return HeapPageImagesRecord(tuple(images))
+    +
+    +
+    +def _require_empty(payload: bytes) -> None:
+    +    if payload:
+    +        raise CorruptWal("record kind requires an empty payload")
+    +
+    +
+    +HEADER_SIZE = _HEADER.size
+    ```
+
+**What it is and why it appears**
+
+The central mechanism is checksummed wal records. Transaction durability needs ordered, typed, checksummed records before data pages may become durable.
+
+**Runtime role**
+
+LSNs are monotonic and a record is visible only after its complete frame is flushed.
+
+**Statement understanding**
+
+The durable boundary is this: lSNs are monotonic and a record is visible only after its complete frame is flushed.
+
+#### Package, fixture, and project support
+
+Keep exports, test corpora, dependencies, and the runtime environment reproducible.
+
+??? note "Supporting file diffs (1 file)"
+    **`src/minipostgres/wal/__init__.py`**
+
+    ```diff
+    diff --git a/src/minipostgres/wal/__init__.py b/src/minipostgres/wal/__init__.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..482d753974fd2bd963de36f0c8c006784479419b
+    --- /dev/null
+    +++ b/src/minipostgres/wal/__init__.py
+    @@ -0,0 +1,6 @@
+    +"""Checksummed write-ahead log and crash-recovery primitives."""
+    +
+    +from minipostgres.wal.manager import WalManager
+    +
+    +__all__ = ["WalManager"]
+    +
+    ```
+
+
+### Verification evidence
+
+Run `uv run pytest -q $(cat journey/stages/22-wal-records/tests.txt)`, then use Journey Check to compare the cumulative source with the canonical Stage.
+
+### Durable takeaways
+
+The durable boundary is this: lSNs are monotonic and a record is visible only after its complete frame is flushed.
+
+### Explain it in your own words
+
+Explain the failure window this Stage closes, how runtime state changes, and which statement protects the boundary.
+
+### Textbook
+
+[Chapter 10](https://github.com/system-in-miniature/mini-postgres/blob/main/docs/tutorial/10-wal-recovery.md)
+
+[Complete reference patch / 完整参考补丁](https://github.com/system-in-miniature/mini-postgres/blob/main/journey/stages/22-wal-records/stage.patch)

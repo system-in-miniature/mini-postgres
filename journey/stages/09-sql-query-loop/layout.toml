@@ -1,0 +1,18 @@
+failure_files = ["tests/contract/test_constraints.py", "tests/contract/test_database_api.py", "tests/integration/test_join_aggregate.py", "tests/integration/test_query_loop.py", "tests/unit/executor/test_modify_operators.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Validated DML query loop mechanism"
+title_zh = "带校验的 DML 查询闭环机制"
+summary_en = "A statement either publishes a fully validated row change or leaves table state unchanged."
+summary_zh = "Statement 要么发布完整校验的行变更，要么保持 Table 状态不变。"
+files = ["src/minipostgres/engine.py", "src/minipostgres/executor/base.py", "src/minipostgres/executor/factory.py", "src/minipostgres/executor/operators.py"]
+
+[[blocks]]
+id = "supporting"
+title_en = "Package, fixture, and project support"
+title_zh = "包、Fixture 与工程支撑"
+summary_en = "Keep exports, test corpora, dependencies, and the runtime environment reproducible."
+summary_zh = "保持包导出、测试语料、依赖与运行环境可复现。"
+files = ["src/minipostgres/__init__.py", "tests/conftest.py"]
+supporting = true

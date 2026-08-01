@@ -1,0 +1,9 @@
+failure_files = ["tests/reliability/test_abort_protocol.py", "tests/reliability/test_commit_protocol.py", "tests/reliability/test_page_lsn.py", "tests/reliability/test_wal_before_data.py", "tests/unit/maintenance/test_horizon.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "WAL durability and cleanup horizon mechanism"
+title_zh = "WAL 持久性与清理 Horizon机制"
+summary_en = "No page outruns WAL and no tuple visible to any active snapshot crosses the cleanup horizon."
+summary_zh = "Page 不得超越 WAL，任何活跃 Snapshot 可见的 Tuple 都不能跨过清理 Horizon。"
+files = ["src/minipostgres/engine.py", "src/minipostgres/maintenance/horizon.py", "src/minipostgres/storage/heap.py", "src/minipostgres/storage/indexed.py", "src/minipostgres/transaction/locks.py", "src/minipostgres/transaction/manager.py", "src/minipostgres/wal/checkpoint.py", "src/minipostgres/wal/control_file.py", "src/minipostgres/wal/recovery.py"]

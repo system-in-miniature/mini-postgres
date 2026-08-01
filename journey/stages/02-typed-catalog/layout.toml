@@ -1,0 +1,18 @@
+failure_files = ["tests/integration/test_catalog_restart.py", "tests/unit/catalog/test_model.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Durable typed catalog mechanism"
+title_zh = "持久化类型目录机制"
+summary_en = "Catalog updates publish complete typed metadata and reopen reconstructs exactly that state."
+summary_zh = "Catalog 更新只发布完整类型元数据，重开必须精确重建该状态。"
+files = ["src/minipostgres/catalog/catalog.py", "src/minipostgres/catalog/model.py"]
+
+[[blocks]]
+id = "supporting"
+title_en = "Package, fixture, and project support"
+title_zh = "包、Fixture 与工程支撑"
+summary_en = "Keep exports, test corpora, dependencies, and the runtime environment reproducible."
+summary_zh = "保持包导出、测试语料、依赖与运行环境可复现。"
+files = ["src/minipostgres/catalog/__init__.py"]
+supporting = true

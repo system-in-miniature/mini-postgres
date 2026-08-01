@@ -1,0 +1,9 @@
+failure_files = ["tests/unit/transaction/test_deadlock_graph.py", "tests/unit/transaction/test_locks.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Writer locks and deadlocks mechanism"
+title_zh = "写锁与死锁机制"
+summary_en = "Lock ownership and wait edges are explicit, and one deterministic victim breaks every detected cycle."
+summary_zh = "Lock Ownership 与 Wait Edge 都显式存在，每个检测到的环由一个确定 Victim 打破。"
+files = ["src/minipostgres/transaction/deadlock.py", "src/minipostgres/transaction/locks.py", "src/minipostgres/transaction/manager.py"]

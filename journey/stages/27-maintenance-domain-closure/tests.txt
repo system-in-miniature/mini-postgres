@@ -1,0 +1,7 @@
+tests/acceptance/test_behavior_matrix.py
+tests/concurrency/test_hot_visibility.py
+tests/integration/test_hot_fallback.py
+tests/integration/test_hot_pruning.py
+tests/integration/test_vacuum_metadata.py
+tests/property/test_vacuum_idempotence.py
+tests/reliability/test_vacuum_recovery.py

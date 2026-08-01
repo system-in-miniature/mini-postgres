@@ -1,0 +1,18 @@
+failure_files = ["tests/unit/sql/test_binder_aggregates.py", "tests/unit/sql/test_binder_names.py", "tests/unit/sql/test_binder_types.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Name and type binding mechanism"
+title_zh = "名称与类型绑定机制"
+summary_en = "Binding resolves every reference in scope and produces typed expressions before planning."
+summary_zh = "Binding 在作用域内解析每个引用，并在规划前产生类型化 Expression。"
+files = ["src/minipostgres/sql/binder.py", "src/minipostgres/sql/bound.py"]
+
+[[blocks]]
+id = "supporting"
+title_en = "Package, fixture, and project support"
+title_zh = "包、Fixture 与工程支撑"
+summary_en = "Keep exports, test corpora, dependencies, and the runtime environment reproducible."
+summary_zh = "保持包导出、测试语料、依赖与运行环境可复现。"
+files = ["tests/unit/sql/conftest.py"]
+supporting = true

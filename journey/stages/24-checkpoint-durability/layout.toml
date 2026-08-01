@@ -1,0 +1,9 @@
+failure_files = ["tests/unit/wal/test_checkpoint.py", "tests/unit/wal/test_recovery.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Sharp checkpoint durability mechanism"
+title_zh = "Sharp Checkpoint 持久性机制"
+summary_en = "No data page outruns durable WAL, and recovery starts only from a completely published checkpoint."
+summary_zh = "Data Page 不得超越 Durable WAL，Recovery 只能从完整发布的 Checkpoint 开始。"
+files = ["src/minipostgres/wal/checkpoint.py", "src/minipostgres/wal/recovery.py"]

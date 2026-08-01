@@ -1,0 +1,9 @@
+failure_files = ["tests/integration/test_buffer_eviction.py", "tests/integration/test_disk_restart.py", "tests/integration/test_heap_table.py", "tests/property/test_heap_table_model.py", "tests/property/test_slotted_page_model.py", "tests/property/test_tuple_codec_property.py", "tests/unit/storage/test_buffer_pool.py", "tests/unit/storage/test_clock_replacer.py", "tests/unit/storage/test_disk_manager.py", "tests/unit/storage/test_free_space.py", "tests/unit/storage/test_page_guard.py", "tests/unit/storage/test_slotted_page.py", "tests/unit/storage/test_tuple_codec.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Persistent heap files mechanism"
+title_zh = "持久 Heap File机制"
+summary_en = "Pinned dirty pages reach disk through owned guards, and tuple IDs remain stable across restart."
+summary_zh = "被 Pin 的 Dirty Page 通过受控 Guard 到达磁盘，Tuple ID 跨重启保持稳定。"
+files = ["src/minipostgres/errors.py", "src/minipostgres/storage/buffer.py", "src/minipostgres/storage/constants.py", "src/minipostgres/storage/disk.py", "src/minipostgres/storage/free_space.py", "src/minipostgres/storage/heap.py", "src/minipostgres/storage/identifiers.py", "src/minipostgres/storage/page.py", "src/minipostgres/storage/replacer.py", "src/minipostgres/storage/slotted.py", "src/minipostgres/storage/tuple.py"]

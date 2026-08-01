@@ -1,0 +1,730 @@
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..5ce8e51cda64b5c792b356bcaf3713b493d6592f
+--- /dev/null
++++ b/ARCHITECTURE.md
+@@ -0,0 +1,76 @@
++# Architecture
++
++## Query flow
++
++```text
++SQL text
++   ↓
++Lexer → Parser → syntax AST
++                    ↓
++                 Binder ← Catalog
++                    ↓
++              Logical Plan
++                    ↓
++              Physical Plan
++                    ↓
++              Volcano Executor
++                    ↓
++                TableAccess
++                    ↓
++               MemoryTable
++```
++
++The parser owns syntax only. The Binder is the first layer allowed to resolve
++table aliases, column names, catalog IDs, types, output aliases, aggregate
++legality, and contextual `NULL` types.
++
++Logical and physical nodes are immutable. The `Planner` currently performs
++baseline lowering: scans are sequential, simple equality joins use hash join,
++and other joins use nested loops. Cost-based choices arrive in Phase C.
++
++## Executor ownership
++
++Every executor follows:
++
++```python
++open()
++next() -> ExecutionRow | None
++close()
++```
++
++`collect()` guarantees closure after both success and failure. Rows carry
++catalog-stable `ColumnBinding` keys, source TIDs for modification operators,
++and computed values for projections and aggregates.
++
++Modification executors fully evaluate and validate all candidate rows before
++calling `TableAccess`. They never mutate Python table containers directly.
++
++## Stable storage boundary
++
++`TableAccess` owns:
++
++```text
++insert
++fetch
++scan
++replace
++delete
++```
++
++The Phase A `MemoryTable` assigns stable monotonic TIDs and retains tombstones.
++Later `HeapTable` implements the same query-facing boundary. Normal execution
++must not access heap files, index files, or Python storage lists directly.
++
++## Current persistence
++
++The catalog writes deterministic, versioned JSON through:
++
++```text
++temporary file
++→ fsync
++→ atomic replace
++→ parent-directory fsync
++```
++
++Only catalog metadata is durable in Phase A. Reopening constructs empty
++`MemoryTable` instances for known tables.
+diff --git a/BEHAVIORAL_CONTRACT.md b/BEHAVIORAL_CONTRACT.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..3f15988d5c6446df683f97ac8066419fa844d8fb
+--- /dev/null
++++ b/BEHAVIORAL_CONTRACT.md
+@@ -0,0 +1,57 @@
++# Behavioral Contract
++
++## Values and predicates
++
++- integers are signed 64-bit values and overflow raises an error;
++- `INT64` may widen to `FLOAT64`; no other implicit cast exists;
++- predicates use SQL three-valued logic;
++- `WHERE` and join conditions retain only `TRUE`;
++- comparisons with `NULL` return unknown except `IS NULL`/`IS NOT NULL`;
++- ascending order defaults to nulls last and descending order to nulls first;
++- result order is unspecified without `ORDER BY`.
++
++## Names and grouping
++
++- keywords are case-insensitive and identifier spelling is preserved;
++- unqualified ambiguous columns are rejected;
++- an explicit table alias hides the base table name;
++- `*` expands in table/scope order;
++- output aliases are visible to `ORDER BY`;
++- a non-aggregate selected column must be structurally covered by `GROUP BY`;
++- aggregates are forbidden in `WHERE`, join predicates, and `GROUP BY`;
++- nested aggregates are rejected.
++
++## Aggregates
++
++- `COUNT(*)` counts rows;
++- `COUNT(expression)` counts non-null values;
++- `SUM`, `AVG`, `MIN`, and `MAX` ignore nulls;
++- an empty global aggregate emits one row;
++- `COUNT` returns zero on empty input;
++- the other aggregates return null on empty input;
++- `AVG` returns `FLOAT64`.
++
++## Statement effects
++
++- one `parse()` call accepts exactly one complete statement;
++- DDL is synchronous and catalog metadata is atomically persisted;
++- inserts and updates validate the complete candidate set before mutation;
++- update/delete use source TIDs supplied by the child executor;
++- a runtime error does not leave an executor tree open;
++- `EXPLAIN` does not execute its child;
++- `EXPLAIN ANALYZE` executes it and reports root actual rows and elapsed time.
++
++## Evidence
++
++| Contract | Direct evidence |
++|---|---|
++| parser grammar and precedence | `tests/unit/sql/test_parser_*.py` |
++| binding and type rules | `tests/unit/sql/test_binder_*.py` |
++| three-valued evaluation | `tests/property/test_expression_model.py` |
++| plan shapes and join lowering | `tests/unit/planner/` |
++| stable MemoryTable TIDs | `tests/property/test_memory_table_model.py` |
++| Volcano operator behavior | `tests/unit/executor/test_query_operators.py` |
++| validated modifications | `tests/unit/executor/test_modify_operators.py` |
++| public SQL loop | `tests/integration/test_query_loop.py` |
++| structured EXPLAIN and cleanup | `tests/contract/test_explain.py`, `tests/integration/test_executor_cleanup.py` |
++| Phase A closure | `tests/acceptance/test_phase_a.py` |
+diff --git a/DIFFERENCES_FROM_POSTGRESQL.md b/DIFFERENCES_FROM_POSTGRESQL.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..6d0bbf9b5d70edd49f2aa6773603e483a97f1bed
+--- /dev/null
++++ b/DIFFERENCES_FROM_POSTGRESQL.md
+@@ -0,0 +1,34 @@
++# Differences from PostgreSQL
++
++MiniPostgres borrows mechanisms and vocabulary from PostgreSQL but deliberately
++differs in product scope and implementation.
++
++## Interface
++
++- synchronous Python API instead of a server process;
++- no PostgreSQL wire protocol, `psql`, authentication, roles, or privileges;
++- a small frozen grammar rather than PostgreSQL's SQL dialect;
++- typed Python exceptions rather than PostgreSQL SQLSTATE/error text parity.
++
++## Query engine
++
++- handwritten parser and binder;
++- immutable teaching-oriented plan nodes;
++- only sequential scans in Phase A;
++- deterministic in-memory joins, aggregates, and sorts;
++- structured plan objects rather than PostgreSQL EXPLAIN text compatibility.
++
++## Storage
++
++- Phase A rows live in `MemoryTable` and do not survive restart;
++- the catalog is deterministic JSON, not transactional system tables;
++- later page, heap, B+Tree, and WAL formats are custom and versioned;
++- no PostgreSQL page, relation-fork, WAL, checkpoint, or savepoint format
++  compatibility is claimed.
++
++## Transactions and maintenance
++
++Transactions, MVCC, locks, WAL recovery, Vacuum, and HOT are accepted later
++phases. Their goal is to expose PostgreSQL-shaped invariants, not reproduce
++every lock mode, isolation anomaly, WAL record, pruning optimization, or
++autovacuum policy.
+diff --git a/README.md b/README.md
+index b055eb86db02ece029986756d3d3fafaac155607..7c4e5f9905c82c1f49dab857cb3778e50dd831c8 100644
+--- a/README.md
++++ b/README.md
+@@ -1,5 +1,77 @@
+ # MiniPostgres
+ 
+-Reference implementation in progress. The accepted design is in
+-`docs/superpowers/specs/2026-07-27-minipostgres-reference-project-design.md`.
++MiniPostgres is a PostgreSQL-inspired, single-process relational database
++kernel written in Python. It is **not PostgreSQL-compatible**: there is no
++PostgreSQL wire protocol, `psql` endpoint, or claim of complete SQL
++compatibility.
+ 
++The project makes this query path executable and inspectable:
++
++```text
++SQL
++→ Lexer / Parser
++→ Binder
++→ Logical Plan
++→ Physical Plan
++→ Volcano Executor
++→ TableAccess
++```
++
++Phase A uses a retained `MemoryTable` implementation behind `TableAccess`.
++Later phases replace the access method with heap pages, a buffer pool, and
++B+Tree indexes without rewriting the SQL executor.
++
++## Direct API
++
++```python
++from minipostgres import Database
++
++with Database.open("./demo") as db:
++    db.execute("CREATE TABLE users (id INT NOT NULL, name TEXT)")
++    db.execute("INSERT INTO users VALUES (1, 'Ada'), (2, 'Grace')")
++    result = db.execute(
++        "SELECT name FROM users WHERE id >= 1 ORDER BY id DESC"
++    )
++    print(result.columns)
++    print(result.rows)
++```
++
++`QueryResult` contains immutable `columns`, `rows`, and `command_tag` fields.
++`EXPLAIN` additionally returns a structured physical plan. `EXPLAIN` does not
++execute its child; `EXPLAIN ANALYZE` does.
++
++## Phase A behavior
++
++Implemented:
++
++- typed catalog metadata that survives restart;
++- a bounded SQL lexer and recursive-descent parser;
++- catalog-aware binding, SQL three-valued predicates, and `INT64 → FLOAT64`
++  widening;
++- immutable logical and physical plan trees;
++- sequential scans, filters, projections, nested-loop and hash joins;
++- grouped and global aggregates, sorting, limits, inserts, updates, deletes;
++- structured `EXPLAIN` and executor cleanup after failure.
++
++Catalog metadata is durable in Phase A. Rows are intentionally volatile
++because `MemoryTable` is still the access method. Persistent heap storage,
++indexes, optimizer statistics, MVCC, WAL, recovery, Vacuum, and HOT belong to
++the later accepted phases.
++
++## Verification
++
++```bash
++uv sync
++uv run ruff check .
++uv run pyright src
++uv run pytest -q
++git diff --check
++```
++
++See [SCOPE.md](SCOPE.md), [ARCHITECTURE.md](ARCHITECTURE.md),
++[BEHAVIORAL_CONTRACT.md](BEHAVIORAL_CONTRACT.md), and
++[DIFFERENCES_FROM_POSTGRESQL.md](DIFFERENCES_FROM_POSTGRESQL.md).
++
++This repository is the finished-reference-project workspace.
++The course is designed after the reference project; no chapters, days, quizzes,
++or teaching handoffs are generated here.
+diff --git a/SCOPE.md b/SCOPE.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..9ca70fd11780a2aa48719405c1709d5408dcaf94
+--- /dev/null
++++ b/SCOPE.md
+@@ -0,0 +1,71 @@
++# Scope
++
++## Product boundary
++
++MiniPostgres is an in-process relational database kernel, not a network
++service. PostgreSQL 18 is the semantic and architectural reference, not a
++compatibility target.
++
++## Phase A
++
++Phase A accepts:
++
++```text
++CREATE TABLE
++INSERT
++SELECT
++UPDATE
++DELETE
++EXPLAIN [ANALYZE]
++```
++
++Query clauses:
++
++```text
++WHERE
++INNER JOIN / JOIN
++GROUP BY
++ORDER BY [ASC|DESC] [NULLS FIRST|LAST]
++LIMIT
++```
++
++Aggregates:
++
++```text
++COUNT
++SUM
++AVG
++MIN
++MAX
++```
++
++Types:
++
++```text
++INT64 (INT, INTEGER, BIGINT syntax)
++FLOAT64 (FLOAT syntax)
++BOOLEAN
++TEXT
++NULL
++```
++
++`NOT NULL`, `PRIMARY KEY`, and `UNIQUE` are parsed into metadata. Phase A
++enforces `NOT NULL`; concurrency-safe primary/unique enforcement starts with
++the indexed storage phases.
++
++## Accepted later phases
++
++- Phase B: slotted pages, tuple codecs, disk manager, buffer pool, heap, B+Tree.
++- Phase C: statistics, index scans, costing, rewrites, join selection/order.
++- Phase D: transactions, snapshots, locks, MVCC, WAL, checkpoint, recovery.
++- Phase E: Vacuum, stable-slot reuse, compaction, HOT, differential and final
++  acceptance.
++
++## Non-goals
++
++- PostgreSQL wire or on-disk compatibility;
++- complete PostgreSQL grammar, casts, errors, collations, or system catalogs;
++- users, privileges, foreign keys, views, triggers, stored procedures;
++- parallel query, multiple server processes, replication, or logical decoding;
++- full ARIES, TOAST, SSI, XID wraparound, or production autovacuum;
++- course content inside the reference repository.
+diff --git a/src/minipostgres/storage/__init__.py b/src/minipostgres/storage/__init__.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6e9cd16fd4313e2c8c72665754967addecdb886b
+--- /dev/null
++++ b/src/minipostgres/storage/__init__.py
+@@ -0,0 +1,2 @@
++"""Persistent page primitives shared by heap and index access methods."""
++
+diff --git a/src/minipostgres/storage/constants.py b/src/minipostgres/storage/constants.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4db89adf1fa79fa7b582e223e3567145604f3266
+--- /dev/null
++++ b/src/minipostgres/storage/constants.py
+@@ -0,0 +1,19 @@
++"""Frozen constants for the MiniPostgres on-disk page format."""
++
++from __future__ import annotations
++
++from enum import IntEnum
++
++PAGE_SIZE = 8192
++PAGE_MAGIC = b"MPG1"
++PAGE_FORMAT_VERSION = 1
++
++
++class PageKind(IntEnum):
++    """The physical interpretation of one fixed-size page."""
++
++    HEAP = 1
++    BTREE_META = 2
++    BTREE_INTERNAL = 3
++    BTREE_LEAF = 4
++
+diff --git a/src/minipostgres/storage/identifiers.py b/src/minipostgres/storage/identifiers.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..1aa2cbf74bb1c797a9eb0532f2ae3458a10436b8
+--- /dev/null
++++ b/src/minipostgres/storage/identifiers.py
+@@ -0,0 +1,54 @@
++"""Stable identifiers for relation forks and their pages."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from enum import IntEnum
++
++_MAX_UINT64 = 2**64 - 1
++
++
++class ForkKind(IntEnum):
++    """One independently stored physical relation fork."""
++
++    HEAP = 1
++    BTREE = 2
++
++
++def _validate_uint64(value: int, field: str) -> None:
++    if type(value) is not int or value < 0 or value > _MAX_UINT64:
++        raise ValueError(f"{field} must be an unsigned 64-bit integer")
++
++
++@dataclass(frozen=True, slots=True)
++class RelationId:
++    """The physical object and access-method family owning a page."""
++
++    fork: ForkKind
++    object_id: int
++
++    def __post_init__(self) -> None:
++        _validate_uint64(self.object_id, "object_id")
++
++
++@dataclass(frozen=True, slots=True)
++class PageKey:
++    """A page number scoped by its owning physical relation."""
++
++    relation: RelationId
++    page_id: int
++
++    def __post_init__(self) -> None:
++        _validate_uint64(self.page_id, "page_id")
++
++
++def heap_page_key(table_id: int, page_id: int) -> PageKey:
++    """Build the canonical page identity for a heap relation."""
++
++    return PageKey(RelationId(ForkKind.HEAP, table_id), page_id)
++
++
++def btree_page_key(index_id: int, page_id: int) -> PageKey:
++    """Build the canonical page identity for a B+Tree relation."""
++
++    return PageKey(RelationId(ForkKind.BTREE, index_id), page_id)
+diff --git a/src/minipostgres/storage/page.py b/src/minipostgres/storage/page.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3d547f014f8b90f0c4f7b8e8af65a950a62134af
+--- /dev/null
++++ b/src/minipostgres/storage/page.py
+@@ -0,0 +1,145 @@
++"""Checksummed fixed-size page envelope."""
++
++from __future__ import annotations
++
++import struct
++import zlib
++from dataclasses import dataclass
++
++from minipostgres.errors import CorruptPage, RowTooLarge
++from minipostgres.storage.constants import (
++    PAGE_FORMAT_VERSION,
++    PAGE_MAGIC,
++    PAGE_SIZE,
++    PageKind,
++)
++from minipostgres.storage.identifiers import ForkKind, PageKey
++
++# magic, version, page kind, fork kind, flags, object/page/LSN,
++# lower/upper/special/reserved, checksum
++_HEADER = struct.Struct(">4sBBBBQQQHHHHI")
++_CHECKSUM_OFFSET = _HEADER.size - struct.calcsize(">I")
++_MAX_BODY_SIZE = PAGE_SIZE - _HEADER.size
++_MAX_UINT64 = 2**64 - 1
++
++
++@dataclass(frozen=True, slots=True)
++class DecodedPage:
++    """Validated logical fields from an encoded page."""
++
++    key: PageKey
++    kind: PageKind
++    page_lsn: int
++    lower: int
++    upper: int
++    special: int
++    body: bytes
++
++
++def _checked_lsn(page_lsn: int) -> int:
++    if type(page_lsn) is not int or page_lsn < 0 or page_lsn > _MAX_UINT64:
++        raise ValueError("page_lsn must be an unsigned 64-bit integer")
++    return page_lsn
++
++
++def _page_bytes_with_checksum_zeroed(encoded: bytes) -> bytearray:
++    checksum_input = bytearray(encoded)
++    checksum_input[_CHECKSUM_OFFSET : _CHECKSUM_OFFSET + 4] = b"\x00" * 4
++    return checksum_input
++
++
++def encode_page(
++    key: PageKey,
++    kind: PageKind,
++    page_lsn: int,
++    body: bytes,
++) -> bytes:
++    """Encode one page and bind its checksum to identity and zero padding."""
++
++    _checked_lsn(page_lsn)
++    if len(body) > _MAX_BODY_SIZE:
++        raise RowTooLarge(
++            f"page body is {len(body)} bytes; maximum is {_MAX_BODY_SIZE}"
++        )
++
++    lower = _HEADER.size
++    upper = lower + len(body)
++    special = PAGE_SIZE
++    header = _HEADER.pack(
++        PAGE_MAGIC,
++        PAGE_FORMAT_VERSION,
++        int(kind),
++        int(key.relation.fork),
++        0,
++        key.relation.object_id,
++        key.page_id,
++        page_lsn,
++        lower,
++        upper,
++        special,
++        0,
++        0,
++    )
++    encoded = header + body + b"\x00" * (PAGE_SIZE - len(header) - len(body))
++    checksum = zlib.crc32(encoded) & 0xFFFFFFFF
++    mutable = bytearray(encoded)
++    mutable[_CHECKSUM_OFFSET : _CHECKSUM_OFFSET + 4] = checksum.to_bytes(4, "big")
++    return bytes(mutable)
++
++
++def decode_page(expected_key: PageKey, encoded: bytes) -> DecodedPage:
++    """Validate and decode one page expected at a specific physical address."""
++
++    if len(encoded) != PAGE_SIZE:
++        raise CorruptPage(
++            f"page must contain exactly {PAGE_SIZE} bytes, got {len(encoded)}"
++        )
++    (
++        magic,
++        version,
++        kind_value,
++        fork_value,
++        flags,
++        object_id,
++        page_id,
++        page_lsn,
++        lower,
++        upper,
++        special,
++        reserved,
++        stored_checksum,
++    ) = _HEADER.unpack_from(encoded)
++    if magic != PAGE_MAGIC:
++        raise CorruptPage("invalid page magic")
++    if version != PAGE_FORMAT_VERSION:
++        raise CorruptPage(f"unsupported page format version: {version}")
++    try:
++        kind = PageKind(kind_value)
++        fork = ForkKind(fork_value)
++    except ValueError as error:
++        raise CorruptPage("invalid page or fork kind") from error
++    if flags != 0 or reserved != 0:
++        raise CorruptPage("reserved page header fields are not zero")
++    if (
++        fork is not expected_key.relation.fork
++        or object_id != expected_key.relation.object_id
++        or page_id != expected_key.page_id
++    ):
++        raise CorruptPage("page identity does not match requested page")
++    if not (_HEADER.size <= lower <= upper <= special <= PAGE_SIZE):
++        raise CorruptPage("invalid page bounds")
++
++    checksum_input = _page_bytes_with_checksum_zeroed(encoded)
++    actual_checksum = zlib.crc32(checksum_input) & 0xFFFFFFFF
++    if stored_checksum != actual_checksum:
++        raise CorruptPage("page checksum mismatch")
++
++    return DecodedPage(
++        key=expected_key,
++        kind=kind,
++        page_lsn=page_lsn,
++        lower=lower,
++        upper=upper,
++        special=special,
++        body=encoded[_HEADER.size:upper],
++    )
+diff --git a/tests/acceptance/test_phase_a.py b/tests/acceptance/test_phase_a.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..99f6cfc9d91a114a095dcf165d0f143e115785cd
+--- /dev/null
++++ b/tests/acceptance/test_phase_a.py
+@@ -0,0 +1,57 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++from minipostgres.engine import Database
++
++
++def test_phase_a_query_engine_acceptance(tmp_path: Path) -> None:
++    with Database.open(tmp_path) as db:
++        db.execute("CREATE TABLE users (id INT NOT NULL, name TEXT)")
++        db.execute(
++            "CREATE TABLE orders (id INT NOT NULL, user_id INT, total INT)"
++        )
++        db.execute("INSERT INTO users VALUES (1, 'A'), (2, 'B')")
++        db.execute(
++            "INSERT INTO orders VALUES "
++            "(10, 1, 5), (11, 1, 7), (12, 2, 3)"
++        )
++
++        grouped = db.execute(
++            "SELECT u.name, COUNT(o.id), SUM(o.total) "
++            "FROM users u JOIN orders o ON u.id = o.user_id "
++            "GROUP BY u.name ORDER BY u.name"
++        )
++        assert grouped.rows == (("A", 2, 12), ("B", 1, 3))
++
++        assert db.execute(
++            "UPDATE users SET name = 'C' WHERE id = 2"
++        ).command_tag == "UPDATE 1"
++        assert db.execute(
++            "DELETE FROM orders WHERE total < 5"
++        ).command_tag == "DELETE 1"
++
++        explanation = db.execute(
++            "EXPLAIN SELECT name FROM users WHERE id = 1"
++        )
++        assert explanation.plan is not None
++        assert explanation.plan.node_type == "Project"
++
++
++def test_phase_a_documents_reference_project_boundaries() -> None:
++    readme = Path("README.md").read_text(encoding="utf-8")
++    scope = Path("SCOPE.md").read_text(encoding="utf-8")
++    architecture = Path("ARCHITECTURE.md").read_text(encoding="utf-8")
++    behavior = Path("BEHAVIORAL_CONTRACT.md").read_text(encoding="utf-8")
++    differences = Path("DIFFERENCES_FROM_POSTGRESQL.md").read_text(
++        encoding="utf-8"
++    )
++
++    assert "not PostgreSQL-compatible" in readme
++    assert "MemoryTable" in readme
++    assert "course is designed after the reference project" in readme
++    assert "Phase A" in scope
++    assert "TableAccess" in architecture
++    assert "three-valued" in behavior
++    assert "wire protocol" in differences
++    assert not Path("course").exists()
+diff --git a/tests/unit/storage/test_page_header.py b/tests/unit/storage/test_page_header.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a29c488106bbdd3ee8a241b3f45c7ff2a3c11954
+--- /dev/null
++++ b/tests/unit/storage/test_page_header.py
+@@ -0,0 +1,71 @@
++from __future__ import annotations
++
++import pytest
++
++from minipostgres.errors import CorruptPage, RowTooLarge
++from minipostgres.storage.constants import PAGE_SIZE, PageKind
++from minipostgres.storage.identifiers import (
++    ForkKind,
++    PageKey,
++    RelationId,
++    heap_page_key,
++)
++from minipostgres.storage.page import decode_page, encode_page
++
++
++def test_page_round_trip_preserves_identity_lsn_and_payload() -> None:
++    key = PageKey(RelationId(ForkKind.HEAP, 7), page_id=3)
++
++    encoded = encode_page(key, PageKind.HEAP, page_lsn=91, body=b"abc")
++    decoded = decode_page(key, encoded)
++
++    assert len(encoded) == PAGE_SIZE == 8192
++    assert decoded.key == key
++    assert decoded.kind is PageKind.HEAP
++    assert decoded.page_lsn == 91
++    assert decoded.body == b"abc"
++
++
++def test_page_checksum_detects_torn_page() -> None:
++    key = heap_page_key(1, 0)
++    encoded = bytearray(encode_page(key, PageKind.HEAP, 0, b"row"))
++    encoded[-1] ^= 0xFF
++
++    with pytest.raises(CorruptPage, match="checksum"):
++        decode_page(key, bytes(encoded))
++
++
++def test_page_identity_is_bound_to_relation_fork_and_page_number() -> None:
++    encoded = encode_page(heap_page_key(1, 0), PageKind.HEAP, 0, b"row")
++
++    for wrong_key in (
++        heap_page_key(2, 0),
++        heap_page_key(1, 1),
++        PageKey(RelationId(ForkKind.BTREE, 1), 0),
++    ):
++        with pytest.raises(CorruptPage, match="identity"):
++            decode_page(wrong_key, encoded)
++
++
++def test_page_decoder_rejects_wrong_size_and_invalid_header_fields() -> None:
++    key = heap_page_key(1, 0)
++    encoded = encode_page(key, PageKind.HEAP, 0, b"row")
++
++    with pytest.raises(CorruptPage, match="8192"):
++        decode_page(key, encoded[:-1])
++
++    damaged_magic = bytearray(encoded)
++    damaged_magic[0] ^= 0xFF
++    with pytest.raises(CorruptPage, match="magic"):
++        decode_page(key, bytes(damaged_magic))
++
++
++def test_page_body_and_identifiers_enforce_format_limits() -> None:
++    key = heap_page_key(1, 0)
++
++    with pytest.raises(RowTooLarge):
++        encode_page(key, PageKind.HEAP, 0, b"x" * PAGE_SIZE)
++    with pytest.raises(ValueError):
++        heap_page_key(-1, 0)
++    with pytest.raises(ValueError):
++        heap_page_key(1, -1)

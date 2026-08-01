@@ -1,0 +1,9 @@
+failure_files = ["tests/concurrency/test_deadlock.py", "tests/concurrency/test_unique_conflicts.py", "tests/concurrency/test_write_conflicts.py", "tests/unit/wal/test_control_file.py", "tests/unit/wal/test_recovery.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Recovery and deadlock victims mechanism"
+title_zh = "恢复与死锁受害者机制"
+summary_en = "Recovery replays a valid ordered prefix idempotently and victim cleanup releases every owned wait or lock."
+summary_zh = "Recovery 幂等回放有效有序前缀，Victim Cleanup 释放其拥有的全部 Wait 与 Lock。"
+files = ["src/minipostgres/engine.py", "src/minipostgres/executor/base.py", "src/minipostgres/executor/operators.py", "src/minipostgres/storage/heap.py", "src/minipostgres/storage/indexed.py", "src/minipostgres/transaction/manager.py", "src/minipostgres/wal/control_file.py", "src/minipostgres/wal/recovery.py"]

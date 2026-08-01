@@ -1,0 +1,5 @@
+tests/acceptance/test_phase_b.py
+tests/contract/test_analyze.py
+tests/integration/test_statistics_restart.py
+tests/property/test_histogram.py
+tests/unit/catalog/test_statistics.py

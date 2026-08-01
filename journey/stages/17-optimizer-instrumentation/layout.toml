@@ -1,0 +1,9 @@
+failure_files = ["tests/contract/test_explain_analyze.py", "tests/integration/test_index_scan_results.py", "tests/integration/test_instrumentation_cleanup.py", "tests/integration/test_join_algorithm_results.py", "tests/property/test_join_order_equivalence.py", "tests/unit/planner/test_join_choice.py", "tests/unit/planner/test_join_order.py", "tests/unit/planner/test_scan_choice.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Optimizer and instrumentation mechanism"
+title_zh = "Optimizer 与执行度量机制"
+summary_en = "Chosen plans preserve results, bounded join search stays deterministic, and instrumentation closes with operator ownership."
+summary_zh = "选定 Plan 保持结果，有界 Join Search 保持确定，Instrumentation 随 Operator Ownership 关闭。"
+files = ["src/minipostgres/engine.py", "src/minipostgres/executor/factory.py", "src/minipostgres/executor/instrumentation.py", "src/minipostgres/executor/operators.py", "src/minipostgres/planner/explain.py", "src/minipostgres/planner/memo.py", "src/minipostgres/planner/optimizer.py", "src/minipostgres/planner/physical.py"]

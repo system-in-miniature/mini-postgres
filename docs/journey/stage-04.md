@@ -1,0 +1,972 @@
+# Stage 04 · Precedence-aware SQL parser
+
+### Goal
+
+Build precedence-aware sql parser and explain its boundary from an executable counterexample, runtime state, and the critical statement.
+
+??? note "Deliverable files"
+    - `src/minipostgres/sql/ast.py`
+    - `src/minipostgres/sql/parser.py`
+    - `tests/unit/sql/test_parser_ddl_dml.py`
+    - `tests/unit/sql/test_parser_precedence.py`
+    - `tests/unit/sql/test_parser_select.py`
+
+### The problem at this point
+
+Tokens need a closed ast whose precedence and statement shapes cannot depend on later execution.
+
+### Test contract
+
+#### See the failure first
+
+The focused tests force precedence-aware sql parser through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
+
+??? note "File diff: tests/unit/sql/test_parser_ddl_dml.py"
+    ```diff
+    diff --git a/tests/unit/sql/test_parser_ddl_dml.py b/tests/unit/sql/test_parser_ddl_dml.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..a4e39075a3a9d6006cc983366e1d1bcc0529bd9c
+    --- /dev/null
+    +++ b/tests/unit/sql/test_parser_ddl_dml.py
+    @@ -0,0 +1,91 @@
+    +from __future__ import annotations
+    +
+    +import pytest
+    +
+    +from minipostgres.errors import SqlSyntaxError
+    +from minipostgres.sql.ast import (
+    +    AnalyzeStmt,
+    +    BeginStmt,
+    +    CommitStmt,
+    +    CreateIndexStmt,
+    +    CreateTableStmt,
+    +    DeleteStmt,
+    +    ExplainStmt,
+    +    InsertStmt,
+    +    RollbackStmt,
+    +    UpdateStmt,
+    +    VacuumStmt,
+    +)
+    +from minipostgres.sql.parser import parse
+    +
+    +
+    +def test_parse_create_table_constraints() -> None:
+    +    statement = parse(
+    +        "CREATE TABLE users ("
+    +        "id INT PRIMARY KEY, name TEXT NOT NULL, score FLOAT, active BOOLEAN"
+    +        ");"
+    +    )
+    +
+    +    assert isinstance(statement, CreateTableStmt)
+    +    assert statement.name == "users"
+    +    assert [column.type_name for column in statement.columns] == [
+    +        "INT64",
+    +        "TEXT",
+    +        "FLOAT64",
+    +        "BOOLEAN",
+    +    ]
+    +    assert statement.columns[0].primary_key
+    +    assert not statement.columns[1].nullable
+    +
+    +
+    +def test_parse_create_unique_index() -> None:
+    +    statement = parse("CREATE UNIQUE INDEX users_name ON users (name)")
+    +
+    +    assert isinstance(statement, CreateIndexStmt)
+    +    assert statement.unique
+    +    assert statement.columns == ("name",)
+    +
+    +
+    +def test_parse_insert_multiple_rows_and_optional_columns() -> None:
+    +    statement = parse(
+    +        "INSERT INTO users (id, name) VALUES (1, 'A'), (2, NULL)"
+    +    )
+    +
+    +    assert isinstance(statement, InsertStmt)
+    +    assert statement.columns == ("id", "name")
+    +    assert len(statement.rows) == 2
+    +    assert statement.rows[1][1].value is None
+    +
+    +
+    +def test_parse_update_and_delete() -> None:
+    +    update = parse("UPDATE users SET name = 'B', score = score + 1 WHERE id = 2")
+    +    delete = parse("DELETE FROM users WHERE active = FALSE")
+    +
+    +    assert isinstance(update, UpdateStmt)
+    +    assert [assignment.column for assignment in update.assignments] == [
+    +        "name",
+    +        "score",
+    +    ]
+    +    assert update.where is not None
+    +    assert isinstance(delete, DeleteStmt)
+    +    assert delete.where is not None
+    +
+    +
+    +def test_parse_control_maintenance_and_explain_statements() -> None:
+    +    assert isinstance(parse("BEGIN"), BeginStmt)
+    +    assert isinstance(parse("COMMIT"), CommitStmt)
+    +    assert isinstance(parse("ROLLBACK"), RollbackStmt)
+    +    assert isinstance(parse("ANALYZE users"), AnalyzeStmt)
+    +    assert isinstance(parse("VACUUM"), VacuumStmt)
+    +    explain = parse("EXPLAIN ANALYZE DELETE FROM users")
+    +    assert isinstance(explain, ExplainStmt)
+    +    assert explain.analyze
+    +    assert isinstance(explain.statement, DeleteStmt)
+    +
+    +
+    +def test_parser_requires_exactly_one_complete_statement() -> None:
+    +    with pytest.raises(SqlSyntaxError, match="one statement"):
+    +        parse("SELECT 1; SELECT 2")
+    +    with pytest.raises(SqlSyntaxError, match="expected"):
+    +        parse("INSERT INTO users VALUES (1")
+    +
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The focused tests force precedence-aware sql parser through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
+
+**Key test statement**
+
+```python
+assert isinstance(token.value, str)
+```
+
+This assertion binds the observable result to the Stage's state, visibility, or durability boundary rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the semantic, ordering, ownership, or recovery boundary just introduced.
+
+??? note "File diff: tests/unit/sql/test_parser_precedence.py"
+    ```diff
+    diff --git a/tests/unit/sql/test_parser_precedence.py b/tests/unit/sql/test_parser_precedence.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..51689b3c60ad3f436bdfed51af6443b68523cd5c
+    --- /dev/null
+    +++ b/tests/unit/sql/test_parser_precedence.py
+    @@ -0,0 +1,46 @@
+    +from __future__ import annotations
+    +
+    +import pytest
+    +
+    +from minipostgres.errors import SqlSyntaxError
+    +from minipostgres.sql.ast import BinaryExpr, SelectStmt, UnaryExpr
+    +from minipostgres.sql.parser import parse
+    +
+    +
+    +def test_and_binds_more_tightly_than_or() -> None:
+    +    statement = parse("SELECT * FROM t WHERE a = 1 OR b = 2 AND c = 3")
+    +
+    +    assert isinstance(statement, SelectStmt)
+    +    assert isinstance(statement.where, BinaryExpr)
+    +    assert statement.where.operator == "OR"
+    +    assert isinstance(statement.where.right, BinaryExpr)
+    +    assert statement.where.right.operator == "AND"
+    +
+    +
+    +def test_arithmetic_and_unary_precedence() -> None:
+    +    statement = parse("SELECT -1 + 2 * 3")
+    +
+    +    assert isinstance(statement, SelectStmt)
+    +    expression = statement.items[0].expression
+    +    assert isinstance(expression, BinaryExpr)
+    +    assert expression.operator == "+"
+    +    assert isinstance(expression.left, UnaryExpr)
+    +    assert isinstance(expression.right, BinaryExpr)
+    +    assert expression.right.operator == "*"
+    +
+    +
+    +def test_parentheses_override_precedence() -> None:
+    +    statement = parse("SELECT (1 + 2) * 3")
+    +
+    +    assert isinstance(statement, SelectStmt)
+    +    expression = statement.items[0].expression
+    +    assert isinstance(expression, BinaryExpr)
+    +    assert expression.operator == "*"
+    +    assert isinstance(expression.left, BinaryExpr)
+    +    assert expression.left.operator == "+"
+    +
+    +
+    +def test_chained_comparison_is_rejected() -> None:
+    +    with pytest.raises(SqlSyntaxError, match="chained comparisons"):
+    +        parse("SELECT 1 < 2 < 3")
+    +
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The focused tests force precedence-aware sql parser through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
+
+**Key test statement**
+
+```python
+assert isinstance(token.value, str)
+```
+
+This assertion binds the observable result to the Stage's state, visibility, or durability boundary rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the semantic, ordering, ownership, or recovery boundary just introduced.
+
+??? note "File diff: tests/unit/sql/test_parser_select.py"
+    ```diff
+    diff --git a/tests/unit/sql/test_parser_select.py b/tests/unit/sql/test_parser_select.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..7eaaa26a4fe99007952acbc39fa6334299d25dbe
+    --- /dev/null
+    +++ b/tests/unit/sql/test_parser_select.py
+    @@ -0,0 +1,62 @@
+    +from __future__ import annotations
+    +
+    +from minipostgres.sql.ast import (
+    +    BinaryExpr,
+    +    ColumnRef,
+    +    FunctionCall,
+    +    SelectStmt,
+    +    Star,
+    +)
+    +from minipostgres.sql.parser import parse
+    +
+    +
+    +def test_parse_select_join_group_order_limit() -> None:
+    +    statement = parse(
+    +        "SELECT u.name, COUNT(o.id) AS n "
+    +        "FROM users u INNER JOIN orders AS o ON u.id = o.user_id "
+    +        "WHERE o.total >= 10 GROUP BY u.name "
+    +        "ORDER BY n DESC NULLS FIRST LIMIT 5"
+    +    )
+    +
+    +    assert isinstance(statement, SelectStmt)
+    +    assert statement.from_table is not None
+    +    assert statement.from_table.alias == "u"
+    +    assert len(statement.joins) == 1
+    +    assert statement.joins[0].table.alias == "o"
+    +    assert statement.limit == 5
+    +    assert statement.order_by[0].direction == "DESC"
+    +    assert statement.order_by[0].nulls == "FIRST"
+    +    aggregate = statement.items[1].expression
+    +    assert isinstance(aggregate, FunctionCall)
+    +    assert aggregate.name == "COUNT"
+    +
+    +
+    +def test_parse_select_star_qualified_star_and_expression_only_select() -> None:
+    +    star = parse("SELECT *, u.* FROM users u")
+    +    expression_only = parse("SELECT 1 + 2 AS answer")
+    +
+    +    assert isinstance(star, SelectStmt)
+    +    assert isinstance(star.items[0].expression, Star)
+    +    assert star.items[1].expression == Star("u")
+    +    assert isinstance(expression_only, SelectStmt)
+    +    assert expression_only.from_table is None
+    +    assert expression_only.items[0].alias == "answer"
+    +
+    +
+    +def test_parse_is_null_and_boolean_literals() -> None:
+    +    statement = parse(
+    +        "SELECT id FROM users WHERE deleted_at IS NULL OR active = TRUE"
+    +    )
+    +
+    +    assert isinstance(statement, SelectStmt)
+    +    assert isinstance(statement.where, BinaryExpr)
+    +    assert statement.where.operator == "OR"
+    +
+    +
+    +def test_column_reference_preserves_qualification() -> None:
+    +    statement = parse("SELECT Users.ID FROM Users")
+    +
+    +    assert isinstance(statement, SelectStmt)
+    +    reference = statement.items[0].expression
+    +    assert reference == ColumnRef(name="ID", table="Users")
+    +
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The focused tests force precedence-aware sql parser through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
+
+**Key test statement**
+
+```python
+assert isinstance(token.value, str)
+```
+
+This assertion binds the observable result to the Stage's state, visibility, or durability boundary rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the semantic, ordering, ownership, or recovery boundary just introduced.
+
+### Basic concepts
+
+The central mechanism is precedence-aware sql parser. Tokens need a closed ast whose precedence and statement shapes cannot depend on later execution.
+
+### Why this mechanism is necessary
+
+Tokens need a closed ast whose precedence and statement shapes cannot depend on later execution. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+
+### Runtime mental model
+
+Parsing is deterministic and rejects trailing or malformed syntax before catalog access.
+
+### Mechanism blocks
+
+#### Precedence-aware SQL parser mechanism
+
+Parsing is deterministic and rejects trailing or malformed syntax before catalog access.
+
+??? note "File diff: src/minipostgres/sql/ast.py"
+    ```diff
+    diff --git a/src/minipostgres/sql/ast.py b/src/minipostgres/sql/ast.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..1d323048125742ddbbc35ea844fc0b23e37386f3
+    --- /dev/null
+    +++ b/src/minipostgres/sql/ast.py
+    @@ -0,0 +1,172 @@
+    +"""Immutable syntax tree for the frozen MiniPostgres SQL subset."""
+    +
+    +from __future__ import annotations
+    +
+    +from dataclasses import dataclass
+    +
+    +from minipostgres.types import Scalar
+    +
+    +
+    +class Expr:
+    +    """Marker base class for syntax-level expressions."""
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class Literal(Expr):
+    +    value: Scalar
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class ColumnRef(Expr):
+    +    name: str
+    +    table: str | None = None
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class Star(Expr):
+    +    table: str | None = None
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class UnaryExpr(Expr):
+    +    operator: str
+    +    operand: Expr
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class BinaryExpr(Expr):
+    +    left: Expr
+    +    operator: str
+    +    right: Expr
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class IsNullExpr(Expr):
+    +    operand: Expr
+    +    negated: bool = False
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class FunctionCall(Expr):
+    +    name: str
+    +    arguments: tuple[Expr, ...]
+    +
+    +
+    +class Statement:
+    +    """Marker base class for syntax-level statements."""
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class ColumnDefinition:
+    +    name: str
+    +    type_name: str
+    +    nullable: bool = True
+    +    primary_key: bool = False
+    +    unique: bool = False
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class CreateTableStmt(Statement):
+    +    name: str
+    +    columns: tuple[ColumnDefinition, ...]
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class CreateIndexStmt(Statement):
+    +    name: str
+    +    table: str
+    +    columns: tuple[str, ...]
+    +    unique: bool = False
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class InsertStmt(Statement):
+    +    table: str
+    +    columns: tuple[str, ...] | None
+    +    rows: tuple[tuple[Expr, ...], ...]
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class Assignment:
+    +    column: str
+    +    expression: Expr
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class UpdateStmt(Statement):
+    +    table: str
+    +    assignments: tuple[Assignment, ...]
+    +    where: Expr | None = None
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class DeleteStmt(Statement):
+    +    table: str
+    +    where: Expr | None = None
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class TableRef:
+    +    name: str
+    +    alias: str | None = None
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class JoinClause:
+    +    table: TableRef
+    +    condition: Expr
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class SelectItem:
+    +    expression: Expr
+    +    alias: str | None = None
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class OrderItem:
+    +    expression: Expr
+    +    direction: str = "ASC"
+    +    nulls: str | None = None
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class SelectStmt(Statement):
+    +    items: tuple[SelectItem, ...]
+    +    from_table: TableRef | None = None
+    +    joins: tuple[JoinClause, ...] = ()
+    +    where: Expr | None = None
+    +    group_by: tuple[Expr, ...] = ()
+    +    order_by: tuple[OrderItem, ...] = ()
+    +    limit: int | None = None
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class ExplainStmt(Statement):
+    +    statement: Statement
+    +    analyze: bool = False
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class AnalyzeStmt(Statement):
+    +    table: str | None = None
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class VacuumStmt(Statement):
+    +    table: str | None = None
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class BeginStmt(Statement):
+    +    pass
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class CommitStmt(Statement):
+    +    pass
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class RollbackStmt(Statement):
+    +    pass
+    ```
+
+??? note "File diff: src/minipostgres/sql/parser.py"
+    ```diff
+    diff --git a/src/minipostgres/sql/parser.py b/src/minipostgres/sql/parser.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..caeb192785c6845e04724d393a12c7a10cba5081
+    --- /dev/null
+    +++ b/src/minipostgres/sql/parser.py
+    @@ -0,0 +1,421 @@
+    +"""Recursive-descent parser for the frozen MiniPostgres SQL grammar."""
+    +
+    +from __future__ import annotations
+    +
+    +from typing import NoReturn
+    +
+    +from minipostgres.errors import SqlSyntaxError
+    +from minipostgres.sql.ast import (
+    +    AnalyzeStmt,
+    +    Assignment,
+    +    BeginStmt,
+    +    BinaryExpr,
+    +    ColumnDefinition,
+    +    ColumnRef,
+    +    CommitStmt,
+    +    CreateIndexStmt,
+    +    CreateTableStmt,
+    +    DeleteStmt,
+    +    ExplainStmt,
+    +    Expr,
+    +    FunctionCall,
+    +    InsertStmt,
+    +    IsNullExpr,
+    +    JoinClause,
+    +    Literal,
+    +    OrderItem,
+    +    RollbackStmt,
+    +    SelectItem,
+    +    SelectStmt,
+    +    Star,
+    +    Statement,
+    +    TableRef,
+    +    UnaryExpr,
+    +    UpdateStmt,
+    +    VacuumStmt,
+    +)
+    +from minipostgres.sql.lexer import lex
+    +from minipostgres.sql.tokens import Token, TokenKind
+    +
+    +_TYPE_NAMES = {
+    +    TokenKind.INT: "INT64",
+    +    TokenKind.INTEGER_TYPE: "INT64",
+    +    TokenKind.BIGINT: "INT64",
+    +    TokenKind.FLOAT_TYPE: "FLOAT64",
+    +    TokenKind.BOOLEAN: "BOOLEAN",
+    +    TokenKind.TEXT: "TEXT",
+    +}
+    +
+    +_COMPARISONS = {
+    +    TokenKind.EQ: "=",
+    +    TokenKind.NEQ: "!=",
+    +    TokenKind.LT: "<",
+    +    TokenKind.LTE: "<=",
+    +    TokenKind.GT: ">",
+    +    TokenKind.GTE: ">=",
+    +}
+    +
+    +
+    +class _Parser:
+    +    def __init__(self, source: str) -> None:
+    +        self._tokens = lex(source)
+    +        self._index = 0
+    +
+    +    def parse(self) -> Statement:
+    +        if self._at(TokenKind.EOF):
+    +            self._fail("expected one statement")
+    +        statement = self._statement()
+    +        if self._match(TokenKind.SEMICOLON) and not self._at(TokenKind.EOF):
+    +            self._fail("expected exactly one statement")
+    +        if not self._at(TokenKind.EOF):
+    +            self._fail("expected exactly one statement")
+    +        return statement
+    +
+    +    @property
+    +    def _current(self) -> Token:
+    +        return self._tokens[self._index]
+    +
+    +    def _at(self, *kinds: TokenKind) -> bool:
+    +        return self._current.kind in kinds
+    +
+    +    def _advance(self) -> Token:
+    +        token = self._current
+    +        if token.kind is not TokenKind.EOF:
+    +            self._index += 1
+    +        return token
+    +
+    +    def _match(self, *kinds: TokenKind) -> Token | None:
+    +        if self._at(*kinds):
+    +            return self._advance()
+    +        return None
+    +
+    +    def _expect(self, kind: TokenKind, label: str) -> Token:
+    +        token = self._match(kind)
+    +        if token is None:
+    +            self._fail(f"expected {label}")
+    +        return token
+    +
+    +    def _identifier(self, label: str = "identifier") -> str:
+    +        token = self._expect(TokenKind.IDENT, label)
+    +        assert isinstance(token.value, str)
+    +        return token.value
+    +
+    +    def _fail(self, message: str, token: Token | None = None) -> NoReturn:
+    +        target = token or self._current
+    +        raise SqlSyntaxError(f"line {target.line}, column {target.column}: {message}")
+    +
+    +    def _statement(self) -> Statement:
+    +        if self._match(TokenKind.CREATE):
+    +            return self._create()
+    +        if self._match(TokenKind.INSERT):
+    +            return self._insert()
+    +        if self._match(TokenKind.SELECT):
+    +            return self._select()
+    +        if self._match(TokenKind.UPDATE):
+    +            return self._update()
+    +        if self._match(TokenKind.DELETE):
+    +            return self._delete()
+    +        if self._match(TokenKind.EXPLAIN):
+    +            analyze = self._match(TokenKind.ANALYZE) is not None
+    +            return ExplainStmt(self._statement(), analyze=analyze)
+    +        if self._match(TokenKind.ANALYZE):
+    +            table = None if self._at_statement_end else self._identifier("table name")
+    +            return AnalyzeStmt(table)
+    +        if self._match(TokenKind.VACUUM):
+    +            table = None if self._at_statement_end else self._identifier("table name")
+    +            return VacuumStmt(table)
+    +        if self._match(TokenKind.BEGIN):
+    +            return BeginStmt()
+    +        if self._match(TokenKind.COMMIT):
+    +            return CommitStmt()
+    +        if self._match(TokenKind.ROLLBACK):
+    +            return RollbackStmt()
+    +        self._fail("expected a supported statement")
+    +
+    +    @property
+    +    def _at_statement_end(self) -> bool:
+    +        return self._at(TokenKind.SEMICOLON, TokenKind.EOF)
+    +
+    +    def _create(self) -> Statement:
+    +        if self._match(TokenKind.TABLE):
+    +            return self._create_table()
+    +        unique = self._match(TokenKind.UNIQUE) is not None
+    +        self._expect(TokenKind.INDEX, "TABLE or INDEX")
+    +        name = self._identifier("index name")
+    +        self._expect(TokenKind.ON, "ON")
+    +        table = self._identifier("table name")
+    +        self._expect(TokenKind.LPAREN, "'('")
+    +        columns = self._identifier_list()
+    +        self._expect(TokenKind.RPAREN, "')'")
+    +        return CreateIndexStmt(name, table, columns, unique=unique)
+    +
+    +    def _create_table(self) -> CreateTableStmt:
+    +        name = self._identifier("table name")
+    +        self._expect(TokenKind.LPAREN, "'('")
+    +        columns = [self._column_definition()]
+    +        while self._match(TokenKind.COMMA):
+    +            columns.append(self._column_definition())
+    +        self._expect(TokenKind.RPAREN, "')'")
+    +        return CreateTableStmt(name, tuple(columns))
+    +
+    +    def _column_definition(self) -> ColumnDefinition:
+    +        name = self._identifier("column name")
+    +        type_token = self._current
+    +        type_name = _TYPE_NAMES.get(type_token.kind)
+    +        if type_name is None:
+    +            self._fail("expected column type")
+    +        self._advance()
+    +        nullable = True
+    +        primary_key = False
+    +        unique = False
+    +        seen: set[str] = set()
+    +        while True:
+    +            if self._match(TokenKind.NOT):
+    +                if "nullability" in seen:
+    +                    self._fail("duplicate NULL constraint")
+    +                self._expect(TokenKind.NULL, "NULL after NOT")
+    +                nullable = False
+    +                seen.add("nullability")
+    +            elif self._match(TokenKind.PRIMARY):
+    +                if "primary" in seen:
+    +                    self._fail("duplicate PRIMARY KEY constraint")
+    +                self._expect(TokenKind.KEY, "KEY after PRIMARY")
+    +                primary_key = True
+    +                nullable = False
+    +                unique = True
+    +                seen.add("primary")
+    +            elif self._match(TokenKind.UNIQUE):
+    +                if "unique" in seen:
+    +                    self._fail("duplicate UNIQUE constraint")
+    +                unique = True
+    +                seen.add("unique")
+    +            else:
+    +                break
+    +        return ColumnDefinition(name, type_name, nullable, primary_key, unique)
+    +
+    +    def _insert(self) -> InsertStmt:
+    +        self._expect(TokenKind.INTO, "INTO")
+    +        table = self._identifier("table name")
+    +        columns: tuple[str, ...] | None = None
+    +        if self._match(TokenKind.LPAREN):
+    +            columns = self._identifier_list()
+    +            self._expect(TokenKind.RPAREN, "')'")
+    +        self._expect(TokenKind.VALUES, "VALUES")
+    +        rows = [self._expression_row()]
+    +        while self._match(TokenKind.COMMA):
+    +            rows.append(self._expression_row())
+    +        return InsertStmt(table, columns, tuple(rows))
+    +
+    +    def _expression_row(self) -> tuple[Expr, ...]:
+    +        self._expect(TokenKind.LPAREN, "'('")
+    +        expressions = [self._expression()]
+    +        while self._match(TokenKind.COMMA):
+    +            expressions.append(self._expression())
+    +        self._expect(TokenKind.RPAREN, "')'")
+    +        return tuple(expressions)
+    +
+    +    def _update(self) -> UpdateStmt:
+    +        table = self._identifier("table name")
+    +        self._expect(TokenKind.SET, "SET")
+    +        assignments = [self._assignment()]
+    +        while self._match(TokenKind.COMMA):
+    +            assignments.append(self._assignment())
+    +        where = self._expression() if self._match(TokenKind.WHERE) else None
+    +        return UpdateStmt(table, tuple(assignments), where)
+    +
+    +    def _assignment(self) -> Assignment:
+    +        column = self._identifier("column name")
+    +        self._expect(TokenKind.EQ, "'='")
+    +        return Assignment(column, self._expression())
+    +
+    +    def _delete(self) -> DeleteStmt:
+    +        self._expect(TokenKind.FROM, "FROM")
+    +        table = self._identifier("table name")
+    +        where = self._expression() if self._match(TokenKind.WHERE) else None
+    +        return DeleteStmt(table, where)
+    +
+    +    def _select(self) -> SelectStmt:
+    +        items = [self._select_item()]
+    +        while self._match(TokenKind.COMMA):
+    +            items.append(self._select_item())
+    +
+    +        from_table: TableRef | None = None
+    +        joins: list[JoinClause] = []
+    +        if self._match(TokenKind.FROM):
+    +            from_table = self._table_ref()
+    +            while self._at(TokenKind.INNER, TokenKind.JOIN):
+    +                self._match(TokenKind.INNER)
+    +                self._expect(TokenKind.JOIN, "JOIN")
+    +                table = self._table_ref()
+    +                self._expect(TokenKind.ON, "ON")
+    +                joins.append(JoinClause(table, self._expression()))
+    +
+    +        where = self._expression() if self._match(TokenKind.WHERE) else None
+    +        group_by: tuple[Expr, ...] = ()
+    +        if self._match(TokenKind.GROUP):
+    +            self._expect(TokenKind.BY, "BY after GROUP")
+    +            group_by = self._expression_list()
+    +
+    +        order_by: tuple[OrderItem, ...] = ()
+    +        if self._match(TokenKind.ORDER):
+    +            self._expect(TokenKind.BY, "BY after ORDER")
+    +            orders = [self._order_item()]
+    +            while self._match(TokenKind.COMMA):
+    +                orders.append(self._order_item())
+    +            order_by = tuple(orders)
+    +
+    +        limit: int | None = None
+    +        if self._match(TokenKind.LIMIT):
+    +            token = self._expect(TokenKind.INTEGER, "non-negative integer")
+    +            assert isinstance(token.value, int)
+    +            limit = token.value
+    +
+    +        return SelectStmt(
+    +            tuple(items),
+    +            from_table,
+    +            tuple(joins),
+    +            where,
+    +            group_by,
+    +            order_by,
+    +            limit,
+    +        )
+    +
+    +    def _select_item(self) -> SelectItem:
+    +        expression = self._expression()
+    +        alias: str | None = None
+    +        if self._match(TokenKind.AS) or self._at(TokenKind.IDENT):
+    +            alias = self._identifier("alias")
+    +        return SelectItem(expression, alias)
+    +
+    +    def _table_ref(self) -> TableRef:
+    +        name = self._identifier("table name")
+    +        alias: str | None = None
+    +        if self._match(TokenKind.AS) or self._at(TokenKind.IDENT):
+    +            alias = self._identifier("table alias")
+    +        return TableRef(name, alias)
+    +
+    +    def _order_item(self) -> OrderItem:
+    +        expression = self._expression()
+    +        direction = "ASC"
+    +        if self._match(TokenKind.ASC):
+    +            direction = "ASC"
+    +        elif self._match(TokenKind.DESC):
+    +            direction = "DESC"
+    +        nulls: str | None = None
+    +        if self._match(TokenKind.NULLS):
+    +            if self._match(TokenKind.FIRST):
+    +                nulls = "FIRST"
+    +            elif self._match(TokenKind.LAST):
+    +                nulls = "LAST"
+    +            else:
+    +                self._fail("expected FIRST or LAST after NULLS")
+    +        return OrderItem(expression, direction, nulls)
+    +
+    +    def _identifier_list(self) -> tuple[str, ...]:
+    +        values = [self._identifier()]
+    +        while self._match(TokenKind.COMMA):
+    +            values.append(self._identifier())
+    +        return tuple(values)
+    +
+    +    def _expression_list(self) -> tuple[Expr, ...]:
+    +        values = [self._expression()]
+    +        while self._match(TokenKind.COMMA):
+    +            values.append(self._expression())
+    +        return tuple(values)
+    +
+    +    def _expression(self) -> Expr:
+    +        return self._or()
+    +
+    +    def _or(self) -> Expr:
+    +        expression = self._and()
+    +        while self._match(TokenKind.OR):
+    +            expression = BinaryExpr(expression, "OR", self._and())
+    +        return expression
+    +
+    +    def _and(self) -> Expr:
+    +        expression = self._not()
+    +        while self._match(TokenKind.AND):
+    +            expression = BinaryExpr(expression, "AND", self._not())
+    +        return expression
+    +
+    +    def _not(self) -> Expr:
+    +        if self._match(TokenKind.NOT):
+    +            return UnaryExpr("NOT", self._not())
+    +        return self._comparison()
+    +
+    +    def _comparison(self) -> Expr:
+    +        expression = self._additive()
+    +        if self._match(TokenKind.IS):
+    +            negated = self._match(TokenKind.NOT) is not None
+    +            self._expect(TokenKind.NULL, "NULL after IS")
+    +            return IsNullExpr(expression, negated)
+    +        operator = _COMPARISONS.get(self._current.kind)
+    +        if operator is None:
+    +            return expression
+    +        self._advance()
+    +        expression = BinaryExpr(expression, operator, self._additive())
+    +        if self._at(*_COMPARISONS, TokenKind.IS):
+    +            self._fail("chained comparisons are not supported")
+    +        return expression
+    +
+    +    def _additive(self) -> Expr:
+    +        expression = self._multiplicative()
+    +        while self._at(TokenKind.PLUS, TokenKind.MINUS):
+    +            operator = self._advance().lexeme
+    +            expression = BinaryExpr(expression, operator, self._multiplicative())
+    +        return expression
+    +
+    +    def _multiplicative(self) -> Expr:
+    +        expression = self._unary()
+    +        while self._at(TokenKind.STAR, TokenKind.SLASH):
+    +            operator = self._advance().lexeme
+    +            expression = BinaryExpr(expression, operator, self._unary())
+    +        return expression
+    +
+    +    def _unary(self) -> Expr:
+    +        if self._at(TokenKind.PLUS, TokenKind.MINUS):
+    +            return UnaryExpr(self._advance().lexeme, self._unary())
+    +        return self._primary()
+    +
+    +    def _primary(self) -> Expr:
+    +        if token := self._match(
+    +            TokenKind.INTEGER,
+    +            TokenKind.FLOAT,
+    +            TokenKind.STRING,
+    +        ):
+    +            return Literal(token.value)
+    +        if self._match(TokenKind.NULL):
+    +            return Literal(None)
+    +        if self._match(TokenKind.TRUE):
+    +            return Literal(True)
+    +        if self._match(TokenKind.FALSE):
+    +            return Literal(False)
+    +        if self._match(TokenKind.STAR):
+    +            return Star()
+    +        if self._match(TokenKind.LPAREN):
+    +            expression = self._expression()
+    +            self._expect(TokenKind.RPAREN, "')'")
+    +            return expression
+    +        if self._at(TokenKind.IDENT):
+    +            name = self._identifier()
+    +            if self._match(TokenKind.LPAREN):
+    +                arguments: list[Expr] = []
+    +                if not self._at(TokenKind.RPAREN):
+    +                    arguments.append(self._expression())
+    +                    while self._match(TokenKind.COMMA):
+    +                        arguments.append(self._expression())
+    +                self._expect(TokenKind.RPAREN, "')'")
+    +                return FunctionCall(name.upper(), tuple(arguments))
+    +            if self._match(TokenKind.DOT):
+    +                if self._match(TokenKind.STAR):
+    +                    return Star(name)
+    +                column = self._identifier("column name")
+    +                return ColumnRef(column, table=name)
+    +            return ColumnRef(name)
+    +        self._fail("expected expression")
+    +
+    +
+    +def parse(source: str) -> Statement:
+    +    """Parse exactly one statement from SQL text."""
+    +
+    +    return _Parser(source).parse()
+    ```
+
+**What it is and why it appears**
+
+The central mechanism is precedence-aware sql parser. Tokens need a closed ast whose precedence and statement shapes cannot depend on later execution.
+
+**Runtime role**
+
+Parsing is deterministic and rejects trailing or malformed syntax before catalog access.
+
+**Statement understanding**
+
+The durable boundary is this: parsing is deterministic and rejects trailing or malformed syntax before catalog access.
+
+### Verification evidence
+
+Run `uv run pytest -q $(cat journey/stages/04-sql-parser/tests.txt)`, then use Journey Check to compare the cumulative source with the canonical Stage.
+
+### Durable takeaways
+
+The durable boundary is this: parsing is deterministic and rejects trailing or malformed syntax before catalog access.
+
+### Explain it in your own words
+
+Explain the failure window this Stage closes, how runtime state changes, and which statement protects the boundary.
+
+### Textbook
+
+[Chapter 2](https://github.com/system-in-miniature/mini-postgres/blob/main/docs/tutorial/02-sql-frontend.md)
+
+[Complete reference patch / 完整参考补丁](https://github.com/system-in-miniature/mini-postgres/blob/main/journey/stages/04-sql-parser/stage.patch)

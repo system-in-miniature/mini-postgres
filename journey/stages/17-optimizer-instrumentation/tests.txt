@@ -1,0 +1,8 @@
+tests/contract/test_explain_analyze.py
+tests/integration/test_index_scan_results.py
+tests/integration/test_instrumentation_cleanup.py
+tests/integration/test_join_algorithm_results.py
+tests/property/test_join_order_equivalence.py
+tests/unit/planner/test_join_choice.py
+tests/unit/planner/test_join_order.py
+tests/unit/planner/test_scan_choice.py

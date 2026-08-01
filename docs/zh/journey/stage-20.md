@@ -1,0 +1,901 @@
+# Stage 20 · 版本化 Heap 可见性
+
+### 目标
+
+实现版本化 Heap 可见性，并能从可执行反例、运行时状态与关键语句解释其边界。
+
+??? note "交付文件"
+    - `src/minipostgres/engine.py`
+    - `src/minipostgres/executor/base.py`
+    - `src/minipostgres/executor/operators.py`
+    - `src/minipostgres/storage/heap.py`
+    - `src/minipostgres/storage/indexed.py`
+    - `src/minipostgres/storage/slotted.py`
+    - `src/minipostgres/transaction/manager.py`
+    - `src/minipostgres/transaction/status.py`
+    - `tests/concurrency/test_read_phenomena.py`
+    - `tests/integration/test_mvcc_heap.py`
+
+### 当前遇到的问题
+
+逻辑 Update 与 Delete 必须创建 MVCC Version，且扫描和索引不能暴露不可见 Tuple。
+
+### 测试契约
+
+#### 先看会坏在哪里
+
+聚焦测试让版本化 Heap 可见性经历正常路径、边界值、非法输入与本 Stage 可观察的失败边界。
+
+??? note "文件差异：tests/concurrency/test_read_phenomena.py"
+    ```diff
+    diff --git a/tests/concurrency/test_read_phenomena.py b/tests/concurrency/test_read_phenomena.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..a5e2a249de0806a1df8539e9b646c766e39856f6
+    --- /dev/null
+    +++ b/tests/concurrency/test_read_phenomena.py
+    @@ -0,0 +1,20 @@
+    +from minipostgres.engine import Database
+    +from minipostgres.transaction.model import IsolationLevel
+    +
+    +
+    +def test_read_committed_refreshes_while_repeatable_read_keeps_snapshot(
+    +    engine: Database,
+    +) -> None:
+    +    engine.execute("CREATE TABLE counters (id INT PRIMARY KEY, value INT)")
+    +    engine.execute("INSERT INTO counters VALUES (1, 10)")
+    +    read_committed = engine.session(isolation=IsolationLevel.READ_COMMITTED)
+    +    repeatable = engine.session(isolation=IsolationLevel.REPEATABLE_READ)
+    +    read_committed.execute("BEGIN")
+    +    repeatable.execute("BEGIN")
+    +
+    +    assert read_committed.execute("SELECT value FROM counters").rows == ((10,),)
+    +    assert repeatable.execute("SELECT value FROM counters").rows == ((10,),)
+    +    engine.execute("UPDATE counters SET value = 11 WHERE id = 1")
+    +
+    +    assert read_committed.execute("SELECT value FROM counters").rows == ((11,),)
+    +    assert repeatable.execute("SELECT value FROM counters").rows == ((10,),)
+    ```
+
+**测试锁定什么**
+
+这些测试锁定本 Stage 的正常路径、边界条件、失败可见性与恢复不变量。
+
+**如何构造反例**
+
+聚焦测试让版本化 Heap 可见性经历正常路径、边界值、非法输入与本 Stage 可观察的失败边界。
+
+**关键测试语句**
+
+```python
+assert self._context.snapshot is not None
+```
+
+这条断言把可观察结果与本 Stage 的状态、可见性或持久性边界绑定，而不只检查调用返回。
+
+**失败意味着什么**
+
+失败说明实现跨越了刚建立的语义、顺序、所有权或恢复边界。
+
+??? note "文件差异：tests/integration/test_mvcc_heap.py"
+    ```diff
+    diff --git a/tests/integration/test_mvcc_heap.py b/tests/integration/test_mvcc_heap.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..65583336f30a9be200657726dbe380be06579458
+    --- /dev/null
+    +++ b/tests/integration/test_mvcc_heap.py
+    @@ -0,0 +1,42 @@
+    +from __future__ import annotations
+    +
+    +from minipostgres.engine import Database
+    +from minipostgres.transaction.model import IsolationLevel
+    +
+    +
+    +def test_update_creates_new_version_and_keeps_old_snapshot(
+    +    engine: Database,
+    +) -> None:
+    +    engine.execute("CREATE TABLE users (id INT PRIMARY KEY, age INT)")
+    +    engine.execute("INSERT INTO users VALUES (1, 20)")
+    +    reader = engine.session(isolation=IsolationLevel.REPEATABLE_READ)
+    +    reader.execute("BEGIN")
+    +    assert reader.execute("SELECT age FROM users WHERE id = 1").rows == ((20,),)
+    +
+    +    engine.execute("UPDATE users SET age = 21 WHERE id = 1")
+    +
+    +    assert reader.execute("SELECT age FROM users WHERE id = 1").rows == ((20,),)
+    +    assert engine.execute("SELECT age FROM users WHERE id = 1").rows == ((21,),)
+    +    reader.execute("COMMIT")
+    +
+    +    engine.execute("UPDATE users SET age = 22 WHERE id = 1")
+    +    engine.execute("ANALYZE users")
+    +    assert engine.execute("SELECT age FROM users WHERE id = 1").rows == ((22,),)
+    +
+    +
+    +def test_aborted_insert_and_delete_are_logically_undone(
+    +    engine: Database,
+    +) -> None:
+    +    engine.execute("CREATE TABLE users (id INT PRIMARY KEY)")
+    +    writer = engine.session()
+    +    writer.execute("BEGIN")
+    +    writer.execute("INSERT INTO users VALUES (9)")
+    +    writer.execute("ROLLBACK")
+    +    assert engine.execute("SELECT * FROM users WHERE id = 9").rows == ()
+    +
+    +    engine.execute("INSERT INTO users VALUES (10)")
+    +    deleter = engine.session()
+    +    deleter.execute("BEGIN")
+    +    deleter.execute("DELETE FROM users WHERE id = 10")
+    +    deleter.execute("ROLLBACK")
+    +    assert engine.execute("SELECT * FROM users WHERE id = 10").rows == ((10,),)
+    ```
+
+**测试锁定什么**
+
+这些测试锁定本 Stage 的正常路径、边界条件、失败可见性与恢复不变量。
+
+**如何构造反例**
+
+聚焦测试让版本化 Heap 可见性经历正常路径、边界值、非法输入与本 Stage 可观察的失败边界。
+
+**关键测试语句**
+
+```python
+assert self._context.snapshot is not None
+```
+
+这条断言把可观察结果与本 Stage 的状态、可见性或持久性边界绑定，而不只检查调用返回。
+
+**失败意味着什么**
+
+失败说明实现跨越了刚建立的语义、顺序、所有权或恢复边界。
+
+### 基本概念
+
+核心机制是版本化 Heap 可见性。逻辑 Update 与 Delete 必须创建 MVCC Version，且扫描和索引不能暴露不可见 Tuple。
+
+### 为什么需要这个机制
+
+逻辑 Update 与 Delete 必须创建 MVCC Version，且扫描和索引不能暴露不可见 Tuple。 若不建立明确边界，后续机制只能依赖偶然行为。
+
+### 运行时心智模型
+
+Reader 重检 Visibility，Writer 保持版本链，Abort 恢复此前可观察状态。
+
+### 机制板块
+
+#### 版本化 Heap 可见性机制
+
+Reader 重检 Visibility，Writer 保持版本链，Abort 恢复此前可观察状态。
+
+??? note "文件差异：src/minipostgres/engine.py"
+    ```diff
+    diff --git a/src/minipostgres/engine.py b/src/minipostgres/engine.py
+    index 58fa40bb66ccfd2bc8365b742066ebdcd258cb66..eeec9a03ecfc22c154cc52fce3c0280c44eb9a3c 100644
+    --- a/src/minipostgres/engine.py
+    +++ b/src/minipostgres/engine.py
+    @@ -184,13 +184,18 @@ class Database:
+                     transaction = self._transactions.begin(session.isolation)
+                 else:
+                     transaction.require_usable()
+    -            self._transactions.statement_snapshot(transaction)
+    +            snapshot = self._transactions.statement_snapshot(transaction)
+                 if session.transaction is not None and isinstance(
+                     bound,
+                     (BoundCreateTable, BoundCreateIndex, BoundAnalyze),
+                 ):
+                     transaction.mark_failed()
+                     raise BindError("DDL and ANALYZE are not allowed inside a transaction")
+    +            self._context.configure_transaction(
+    +                transaction,
+    +                snapshot,
+    +                self._transactions.statuses,
+    +            )
+                 try:
+                     result = self._dispatch(bound, syntax)
+                 except BaseException:
+    @@ -199,6 +204,8 @@ class Database:
+                     elif transaction.state is TransactionState.ACTIVE:
+                         transaction.mark_failed()
+                     raise
+    +            finally:
+    +                self._context.clear_transaction()
+                 if implicit:
+                     self._transactions.commit(transaction)
+                 return result
+    ```
+
+??? note "文件差异：src/minipostgres/executor/base.py"
+    ```diff
+    diff --git a/src/minipostgres/executor/base.py b/src/minipostgres/executor/base.py
+    index 2a347b7c987cc21fddc196b6f5c2652a4f791525..89fec93c339526569c6b92b457b44e061a985230 100644
+    --- a/src/minipostgres/executor/base.py
+    +++ b/src/minipostgres/executor/base.py
+    @@ -8,6 +8,9 @@ from types import TracebackType
+
+     from minipostgres.executor.memory import TableAccess
+     from minipostgres.row import ExecutionRow
+    +from minipostgres.transaction.model import Transaction
+    +from minipostgres.transaction.snapshot import Snapshot
+    +from minipostgres.transaction.status import TransactionStatusTable
+
+
+     @dataclass(frozen=True, slots=True)
+    @@ -22,6 +25,24 @@ class ExecutionContext:
+
+         def __init__(self, tables: dict[int, TableAccess]) -> None:
+             self._tables = dict(tables)
+    +        self.transaction: Transaction | None = None
+    +        self.snapshot: Snapshot | None = None
+    +        self.statuses: TransactionStatusTable | None = None
+    +
+    +    def configure_transaction(
+    +        self,
+    +        transaction: Transaction,
+    +        snapshot: Snapshot,
+    +        statuses: TransactionStatusTable,
+    +    ) -> None:
+    +        self.transaction = transaction
+    +        self.snapshot = snapshot
+    +        self.statuses = statuses
+    +
+    +    def clear_transaction(self) -> None:
+    +        self.transaction = None
+    +        self.snapshot = None
+    +        self.statuses = None
+
+         def table(self, table_id: int) -> TableAccess:
+             try:
+    ```
+
+??? note "文件差异：src/minipostgres/executor/operators.py"
+    ```diff
+    diff --git a/src/minipostgres/executor/operators.py b/src/minipostgres/executor/operators.py
+    index f095f12f92dcaa9beff69d6e3c4c51afa483fb8a..b31054a6d2f0a5cecbce67ccc54686371f8f5b5d 100644
+    --- a/src/minipostgres/executor/operators.py
+    +++ b/src/minipostgres/executor/operators.py
+    @@ -72,7 +72,18 @@ class SeqScanExecutor(Executor):
+             self._iterator = None
+
+         def _open(self) -> None:
+    -        self._iterator = self._context.table(self._table_id).scan()
+    +        access = self._context.table(self._table_id)
+    +        if isinstance(access, IndexedTableAccess) and _has_mvcc(self._context):
+    +            assert self._context.snapshot is not None
+    +            assert self._context.transaction is not None
+    +            assert self._context.statuses is not None
+    +            self._iterator = access.scan_mvcc(
+    +                self._context.snapshot,
+    +                self._context.transaction.xid,
+    +                self._context.statuses,
+    +            )
+    +        else:
+    +            self._iterator = access.scan()
+
+         def _next(self) -> ExecutionRow | None:
+             assert self._iterator is not None
+    @@ -107,6 +118,7 @@ class IndexScanExecutor(Executor):
+             self._predicate = predicate
+             self._context = context
+             self._iterator = None
+    +        self._seen_visible: set[TID] = set()
+
+         def _open(self) -> None:
+             access = self._access()
+    @@ -135,7 +147,25 @@ class IndexScanExecutor(Executor):
+             assert self._iterator is not None
+             access = self._access()
+             for _, tid in self._iterator:
+    -            values = access.fetch(tid)
+    +            if _has_mvcc(self._context):
+    +                assert self._context.snapshot is not None
+    +                assert self._context.transaction is not None
+    +                assert self._context.statuses is not None
+    +                resolved = access.resolve_mvcc(
+    +                    tid,
+    +                    self._context.snapshot,
+    +                    self._context.transaction.xid,
+    +                    self._context.statuses,
+    +                )
+    +                if resolved is None:
+    +                    continue
+    +                visible_tid, values = resolved
+    +                if visible_tid in self._seen_visible:
+    +                    continue
+    +                self._seen_visible.add(visible_tid)
+    +                tid = visible_tid
+    +            else:
+    +                values = access.fetch(tid)
+                 if values is None:
+                     continue
+                 row = _table_row(
+    @@ -153,6 +183,7 @@ class IndexScanExecutor(Executor):
+             if callable(close):
+                 close()
+             self._iterator = None
+    +        self._seen_visible.clear()
+
+         def _access(self) -> IndexedTableAccess:
+             access = self._context.table(self._table_id)
+    @@ -453,7 +484,23 @@ class InsertExecutor(ModificationExecutor):
+             inserted: list[TID] = []
+             try:
+                 for candidate in candidates:
+    -                inserted.append(access.insert(candidate))
+    +                if _has_mvcc(self._context) and isinstance(
+    +                    access,
+    +                    IndexedTableAccess,
+    +                ):
+    +                    assert self._context.transaction is not None
+    +                    assert self._context.snapshot is not None
+    +                    assert self._context.statuses is not None
+    +                    inserted.append(
+    +                        access.insert_mvcc(
+    +                            self._context.transaction.xid,
+    +                            self._context.snapshot,
+    +                            self._context.statuses,
+    +                            candidate,
+    +                        )
+    +                    )
+    +                else:
+    +                    inserted.append(access.insert(candidate))
+             except BaseException:
+                 for tid in reversed(inserted):
+                     access.delete(tid)
+    @@ -512,10 +559,39 @@ class UpdateExecutor(ModificationExecutor):
+             applied: list[tuple[TID, tuple[Scalar, ...]]] = []
+             try:
+                 for tid, values in candidates:
+    -                old_values = access.fetch(tid)
+    +                if _has_mvcc(self._context) and isinstance(
+    +                    access,
+    +                    IndexedTableAccess,
+    +                ):
+    +                    assert self._context.transaction is not None
+    +                    assert self._context.snapshot is not None
+    +                    assert self._context.statuses is not None
+    +                    old_values = access.fetch_mvcc(
+    +                        tid,
+    +                        self._context.snapshot,
+    +                        self._context.transaction.xid,
+    +                        self._context.statuses,
+    +                    )
+    +                else:
+    +                    old_values = access.fetch(tid)
+                     if old_values is None:
+                         raise ConstraintViolation("UPDATE source tuple disappeared")
+    -                replacement = access.replace(tid, values)
+    +                if _has_mvcc(self._context) and isinstance(
+    +                    access,
+    +                    IndexedTableAccess,
+    +                ):
+    +                    assert self._context.transaction is not None
+    +                    assert self._context.snapshot is not None
+    +                    assert self._context.statuses is not None
+    +                    replacement = access.replace_mvcc(
+    +                        tid,
+    +                        self._context.transaction.xid,
+    +                        self._context.snapshot,
+    +                        self._context.statuses,
+    +                        values,
+    +                    )
+    +                else:
+    +                    replacement = access.replace(tid, values)
+                     if replacement is None:
+                         raise ConstraintViolation("UPDATE source tuple disappeared")
+                     applied.append((replacement, old_values))
+    @@ -555,7 +631,22 @@ class DeleteExecutor(ModificationExecutor):
+             finally:
+                 self.child.close()
+             access = self._context.table(self._table.table_id)
+    -        self._affected = sum(access.delete(tid) for tid in tids)
+    +        if _has_mvcc(self._context) and isinstance(access, IndexedTableAccess):
+    +            assert self._context.transaction is not None
+    +            self._affected = sum(
+    +                access.delete_mvcc(tid, self._context.transaction.xid)
+    +                for tid in tids
+    +            )
+    +        else:
+    +            self._affected = sum(access.delete(tid) for tid in tids)
+    +
+    +
+    +def _has_mvcc(context: ExecutionContext) -> bool:
+    +    return (
+    +        context.transaction is not None
+    +        and context.snapshot is not None
+    +        and context.statuses is not None
+    +    )
+
+
+     def _drain_opened(executor: Executor) -> list[ExecutionRow]:
+    ```
+
+??? note "文件差异：src/minipostgres/storage/heap.py"
+    ```diff
+    diff --git a/src/minipostgres/storage/heap.py b/src/minipostgres/storage/heap.py
+    index 980b12c314d7b112193acf12ad8707df99ad602a..7beac4546a2e2ab2a03acb52a0bffe589ff0f4bd 100644
+    --- a/src/minipostgres/storage/heap.py
+    +++ b/src/minipostgres/storage/heap.py
+    @@ -15,6 +15,9 @@ from minipostgres.storage.identifiers import heap_page_key, heap_relation
+     from minipostgres.storage.page import decode_page, encode_page
+     from minipostgres.storage.slotted import SlottedPage
+     from minipostgres.storage.tuple import SYSTEM_XID, TupleCodec, TupleVersion
+    +from minipostgres.transaction.snapshot import Snapshot
+    +from minipostgres.transaction.status import TransactionStatusTable
+    +from minipostgres.transaction.visibility import is_visible
+     from minipostgres.types import Scalar
+
+
+    @@ -72,6 +75,141 @@ class HeapTable:
+                         return tid
+                 return self._insert_new_page(encoded_tuple)
+
+    +    def insert_version(self, xid: int, values: tuple[Scalar, ...]) -> TID:
+    +        validated = self.schema.validate_row(values)
+    +        encoded = self._codec.encode(TupleVersion(xid, 0, None, validated))
+    +        with self._lock:
+    +            for page_id in self.free_space.candidate_pages(len(encoded)):
+    +                if (tid := self._try_insert(page_id, encoded)) is not None:
+    +                    return tid
+    +            return self._insert_new_page(encoded)
+    +
+    +    def fetch_visible(
+    +        self,
+    +        tid: TID,
+    +        snapshot: Snapshot,
+    +        current_xid: int,
+    +        statuses: TransactionStatusTable,
+    +    ) -> tuple[Scalar, ...] | None:
+    +        resolved = self.resolve_visible(tid, snapshot, current_xid, statuses)
+    +        return None if resolved is None else resolved[1]
+    +
+    +    def resolve_visible(
+    +        self,
+    +        tid: TID,
+    +        snapshot: Snapshot,
+    +        current_xid: int,
+    +        statuses: TransactionStatusTable,
+    +    ) -> tuple[TID, tuple[Scalar, ...]] | None:
+    +        """Resolve a version-chain root or member to its visible physical tuple."""
+    +
+    +        with self._lock:
+    +            current: TID | None = tid
+    +            visited: set[TID] = set()
+    +            visible: tuple[TID, TupleVersion] | None = None
+    +            while current is not None:
+    +                if current in visited:
+    +                    raise CorruptPage("tuple version chain contains a cycle")
+    +                visited.add(current)
+    +                version = self.physical_version(current)
+    +                if version is None:
+    +                    break
+    +                if is_visible(version, snapshot, current_xid, statuses):
+    +                    visible = (current, version)
+    +                current = version.next_tid
+    +            if visible is None:
+    +                return None
+    +            visible_tid, visible_version = visible
+    +            return visible_tid, visible_version.values
+    +
+    +    def scan_visible(
+    +        self,
+    +        snapshot: Snapshot,
+    +        current_xid: int,
+    +        statuses: TransactionStatusTable,
+    +    ) -> Iterator[tuple[TID, tuple[Scalar, ...]]]:
+    +        with self._lock:
+    +            physical = tuple(self.scan_versions())
+    +            continuations = {
+    +                version.next_tid
+    +                for _, version in physical
+    +                if version.next_tid is not None
+    +            }
+    +            rows: list[tuple[TID, tuple[Scalar, ...]]] = []
+    +            for tid, _ in physical:
+    +                if tid in continuations:
+    +                    continue
+    +                resolved = self.resolve_visible(
+    +                    tid,
+    +                    snapshot,
+    +                    current_xid,
+    +                    statuses,
+    +                )
+    +                if resolved is not None:
+    +                    rows.append(resolved)
+    +            return iter(rows)
+    +
+    +    def replace_version(
+    +        self,
+    +        tid: TID,
+    +        xid: int,
+    +        values: tuple[Scalar, ...],
+    +    ) -> TID | None:
+    +        with self._lock:
+    +            old = self.physical_version(tid)
+    +            if old is None or old.xmax != 0:
+    +                return None
+    +            replacement = self.insert_version(xid, values)
+    +            self._set_version(
+    +                tid,
+    +                TupleVersion(old.xmin, xid, replacement, old.values),
+    +            )
+    +            return replacement
+    +
+    +    def delete_version(self, tid: TID, xid: int) -> bool:
+    +        with self._lock:
+    +            old = self.physical_version(tid)
+    +            if old is None or old.xmax != 0:
+    +                return False
+    +            self._set_version(
+    +                tid,
+    +                TupleVersion(old.xmin, xid, old.next_tid, old.values),
+    +            )
+    +            return True
+    +
+    +    def physical_version(self, tid: TID) -> TupleVersion | None:
+    +        if tid.page_id >= self._pool.page_count(self._relation):
+    +            return None
+    +        with self._pool.fetch_page(
+    +            heap_page_key(self.table_id, tid.page_id)
+    +        ) as guard:
+    +            page = self._slotted_page(guard)
+    +            try:
+    +                return self._codec.decode(page.read(tid.slot_id))
+    +            except KeyError:
+    +                return None
+    +
+    +    def scan_versions(self) -> Iterator[tuple[TID, TupleVersion]]:
+    +        rows: list[tuple[TID, TupleVersion]] = []
+    +        for page_id in range(self._pool.page_count(self._relation)):
+    +            with self._pool.fetch_page(
+    +                heap_page_key(self.table_id, page_id)
+    +            ) as guard:
+    +                page = self._slotted_page(guard)
+    +                rows.extend(
+    +                    (TID(page_id, slot_id), self._codec.decode(page.read(slot_id)))
+    +                    for slot_id in page.live_slots()
+    +                )
+    +        return iter(rows)
+    +
+    +    def _set_version(self, tid: TID, version: TupleVersion) -> None:
+    +        key = heap_page_key(self.table_id, tid.page_id)
+    +        with self._pool.fetch_page(key) as guard:
+    +            page = self._slotted_page(guard)
+    +            page.replace(tid.slot_id, self._codec.encode(version))
+    +            self._publish_page(guard, page)
+    +            self.free_space.record(tid.page_id, page.available_free_bytes)
+    +
+         def fetch(self, tid: TID) -> tuple[Scalar, ...] | None:
+             """Fetch a live physical tuple by stable TID."""
+
+    ```
+
+??? note "文件差异：src/minipostgres/storage/indexed.py"
+    ```diff
+    diff --git a/src/minipostgres/storage/indexed.py b/src/minipostgres/storage/indexed.py
+    index 85a28e8cc7dd2a8c18895eda8ef146b22d655d89..372d20a290e1eba7c52c9bc1450b8ecb4f7d4702 100644
+    --- a/src/minipostgres/storage/indexed.py
+    +++ b/src/minipostgres/storage/indexed.py
+    @@ -11,6 +11,9 @@ from minipostgres.executor.memory import TableAccess
+     from minipostgres.index.btree import BTree
+     from minipostgres.index.key import KeyCodec
+     from minipostgres.row import TID
+    +from minipostgres.storage.heap import HeapTable
+    +from minipostgres.transaction.snapshot import Snapshot
+    +from minipostgres.transaction.status import TransactionStatusTable
+     from minipostgres.types import Scalar
+
+
+    @@ -71,12 +74,54 @@ class IndexedTableAccess:
+                 raise
+             return tid
+
+    +    def insert_mvcc(
+    +        self,
+    +        xid: int,
+    +        snapshot: Snapshot,
+    +        statuses: TransactionStatusTable,
+    +        values: tuple[Scalar, ...],
+    +    ) -> TID:
+    +        heap = self._mvcc_heap()
+    +        validated = self.schema.validate_row(values)
+    +        keys = self._keys(validated)
+    +        self._check_unique_visible(keys, heap, snapshot, xid, statuses)
+    +        tid = heap.insert_version(xid, validated)
+    +        for binding, key in keys:
+    +            binding.tree.insert(key, tid)
+    +        return tid
+    +
+         def fetch(self, tid: TID) -> tuple[Scalar, ...] | None:
+             return self._heap.fetch(tid)
+
+         def scan(self) -> Iterator[tuple[TID, tuple[Scalar, ...]]]:
+             return self._heap.scan()
+
+    +    def fetch_mvcc(
+    +        self,
+    +        tid: TID,
+    +        snapshot: Snapshot,
+    +        xid: int,
+    +        statuses: TransactionStatusTable,
+    +    ) -> tuple[Scalar, ...] | None:
+    +        return self._mvcc_heap().fetch_visible(tid, snapshot, xid, statuses)
+    +
+    +    def resolve_mvcc(
+    +        self,
+    +        tid: TID,
+    +        snapshot: Snapshot,
+    +        xid: int,
+    +        statuses: TransactionStatusTable,
+    +    ) -> tuple[TID, tuple[Scalar, ...]] | None:
+    +        return self._mvcc_heap().resolve_visible(tid, snapshot, xid, statuses)
+    +
+    +    def scan_mvcc(
+    +        self,
+    +        snapshot: Snapshot,
+    +        xid: int,
+    +        statuses: TransactionStatusTable,
+    +    ) -> Iterator[tuple[TID, tuple[Scalar, ...]]]:
+    +        return self._mvcc_heap().scan_visible(snapshot, xid, statuses)
+    +
+         def replace(
+             self,
+             tid: TID,
+    @@ -102,6 +147,39 @@ class IndexedTableAccess:
+                 binding.tree.insert(new_key, replacement)
+             return replacement
+
+    +    def replace_mvcc(
+    +        self,
+    +        tid: TID,
+    +        xid: int,
+    +        snapshot: Snapshot,
+    +        statuses: TransactionStatusTable,
+    +        values: tuple[Scalar, ...],
+    +    ) -> TID | None:
+    +        heap = self._mvcc_heap()
+    +        visible = heap.resolve_visible(tid, snapshot, xid, statuses)
+    +        if visible is None:
+    +            return None
+    +        visible_tid, _old_values = visible
+    +        validated = self.schema.validate_row(values)
+    +        new_keys = self._keys(validated)
+    +        self._check_unique_visible(
+    +            new_keys,
+    +            heap,
+    +            snapshot,
+    +            xid,
+    +            statuses,
+    +            ignored_tid=visible_tid,
+    +        )
+    +        replacement = heap.replace_version(visible_tid, xid, validated)
+    +        if replacement is None:
+    +            return None
+    +        for binding, key in new_keys:
+    +            binding.tree.insert(key, replacement)
+    +        return replacement
+    +
+    +    def delete_mvcc(self, tid: TID, xid: int) -> bool:
+    +        return self._mvcc_heap().delete_version(tid, xid)
+    +
+         def delete(self, tid: TID) -> bool:
+             values = self._heap.fetch(tid)
+             if values is None:
+    @@ -138,3 +216,34 @@ class IndexedTableAccess:
+                     raise ConstraintViolation(
+                         f"unique index {binding.metadata.name} rejects duplicate key"
+                     )
+    +
+    +    @staticmethod
+    +    def _check_unique_visible(
+    +        keys: tuple[tuple[IndexBinding, bytes], ...],
+    +        heap: HeapTable,
+    +        snapshot: Snapshot,
+    +        xid: int,
+    +        statuses: TransactionStatusTable,
+    +        *,
+    +        ignored_tid: TID | None = None,
+    +    ) -> None:
+    +        for binding, key in keys:
+    +            if not binding.metadata.unique:
+    +                continue
+    +            for candidate in binding.tree.search(key):
+    +                resolved = heap.resolve_visible(
+    +                    candidate,
+    +                    snapshot,
+    +                    xid,
+    +                    statuses,
+    +                )
+    +                if resolved is None or resolved[0] == ignored_tid:
+    +                    continue
+    +                raise ConstraintViolation(
+    +                    f"unique index {binding.metadata.name} rejects duplicate key"
+    +                )
+    +
+    +    def _mvcc_heap(self) -> HeapTable:
+    +        if not isinstance(self._heap, HeapTable):
+    +            raise TypeError("MVCC requires a persistent heap")
+    +        return self._heap
+    ```
+
+??? note "文件差异：src/minipostgres/storage/slotted.py"
+    ```diff
+    diff --git a/src/minipostgres/storage/slotted.py b/src/minipostgres/storage/slotted.py
+    index 845f7b126e8c5458287c8c437b1077aefa1bc29e..b62c180904eda2ea12d045b385c428f4253f6250 100644
+    --- a/src/minipostgres/storage/slotted.py
+    +++ b/src/minipostgres/storage/slotted.py
+    @@ -159,6 +159,32 @@ class SlottedPage:
+             self._validate()
+             return value
+
+    +    def replace(self, slot_id: int, value: bytes) -> bytes:
+    +        """Replace one live extent without changing its stable slot ID."""
+    +
+    +        old = self.read(slot_id)
+    +        slot = self._slots[slot_id]
+    +        if len(value) <= slot.length:
+    +            self._buffer[slot.offset : slot.offset + len(value)] = value
+    +            self._slots[slot_id] = _Slot(slot.offset, len(value), _LIVE)
+    +            self._validate()
+    +            return old
+    +        working = SlottedPage.from_bytes(self.page_id, self.to_bytes())
+    +        working._slots[slot_id] = _Slot(0, 0, _DEAD)
+    +        working.compact()
+    +        if len(value) > working.contiguous_free_bytes:
+    +            raise PageFull("replacement tuple does not fit on the page")
+    +        working._upper -= len(value)
+    +        working._buffer[
+    +            working._upper : working._upper + len(value)
+    +        ] = value
+    +        working._slots[slot_id] = _Slot(working._upper, len(value), _LIVE)
+    +        self._buffer = working._buffer
+    +        self._slots = working._slots
+    +        self._upper = working._upper
+    +        self._validate()
+    +        return old
+    +
+         def compact(self) -> None:
+             """Pack live tuple bytes while preserving every slot ID."""
+
+    ```
+
+??? note "文件差异：src/minipostgres/transaction/manager.py"
+    ```diff
+    diff --git a/src/minipostgres/transaction/manager.py b/src/minipostgres/transaction/manager.py
+    index f86afac47ccd3458da382d50d68d8f19c746d4b1..ea6a671e2bc7f577d61c81abb6277538a3483c86 100644
+    --- a/src/minipostgres/transaction/manager.py
+    +++ b/src/minipostgres/transaction/manager.py
+    @@ -1,6 +1,9 @@
+     from __future__ import annotations
+
+    +import json
+    +import os
+     import threading
+    +from pathlib import Path
+
+     from minipostgres.transaction.model import (
+         IsolationLevel,
+    @@ -12,12 +15,35 @@ from minipostgres.transaction.status import TransactionStatus, TransactionStatus
+
+
+     class TransactionManager:
+    -    def __init__(self, *, next_xid: int = 2) -> None:
+    +    def __init__(
+    +        self,
+    +        *,
+    +        next_xid: int = 2,
+    +        root: Path | None = None,
+    +        statuses: dict[int, TransactionStatus] | None = None,
+    +    ) -> None:
+             self._next_xid = next_xid
+             self._active: dict[int, Transaction] = {}
+    -        self.statuses = TransactionStatusTable()
+    +        self.statuses = TransactionStatusTable(statuses)
+    +        self._path = None if root is None else root / "transaction_status.json"
+             self._lock = threading.RLock()
+
+    +    @classmethod
+    +    def open(cls, root: Path) -> TransactionManager:
+    +        path = root / "transaction_status.json"
+    +        if not path.exists():
+    +            return cls(root=root)
+    +        document = json.loads(path.read_text(encoding="utf-8"))
+    +        statuses = {
+    +            int(xid): TransactionStatus(value)
+    +            for xid, value in document["statuses"].items()
+    +        }
+    +        return cls(
+    +            next_xid=int(document["next_xid"]),
+    +            root=root,
+    +            statuses=statuses,
+    +        )
+    +
+         @property
+         def next_xid(self) -> int:
+             with self._lock:
+    @@ -56,6 +82,7 @@ class TransactionManager:
+                 transaction.mark_committed()
+                 self.statuses.set(transaction.xid, TransactionStatus.COMMITTED)
+                 self._active.pop(transaction.xid, None)
+    +            self._persist()
+
+         def abort(self, transaction: Transaction) -> None:
+             with self._lock:
+    @@ -63,7 +90,26 @@ class TransactionManager:
+                     transaction.mark_aborted()
+                 self.statuses.set(transaction.xid, TransactionStatus.ABORTED)
+                 self._active.pop(transaction.xid, None)
+    +            self._persist()
+
+         def active_transactions(self) -> tuple[Transaction, ...]:
+             with self._lock:
+                 return tuple(self._active.values())
+    +
+    +    def _persist(self) -> None:
+    +        if self._path is None:
+    +            return
+    +        document = {
+    +            "next_xid": self._next_xid,
+    +            "statuses": {
+    +                str(xid): status.value
+    +                for xid, status in self.statuses.snapshot()
+    +                if status is not TransactionStatus.IN_PROGRESS
+    +            },
+    +        }
+    +        temporary = self._path.with_suffix(".json.tmp")
+    +        with temporary.open("w", encoding="utf-8") as stream:
+    +            json.dump(document, stream, sort_keys=True)
+    +            stream.flush()
+    +            os.fsync(stream.fileno())
+    +        os.replace(temporary, self._path)
+    ```
+
+??? note "文件差异：src/minipostgres/transaction/status.py"
+    ```diff
+    diff --git a/src/minipostgres/transaction/status.py b/src/minipostgres/transaction/status.py
+    index 33e5da93212ce0bef34bc8e646d173922ec78842..0b480b2699c5d36fe7294795b9283ffc3c1d017a 100644
+    --- a/src/minipostgres/transaction/status.py
+    +++ b/src/minipostgres/transaction/status.py
+    @@ -11,8 +11,11 @@ class TransactionStatus(Enum):
+
+
+     class TransactionStatusTable:
+    -    def __init__(self) -> None:
+    -        self._statuses: dict[int, TransactionStatus] = {}
+    +    def __init__(
+    +        self,
+    +        statuses: dict[int, TransactionStatus] | None = None,
+    +    ) -> None:
+    +        self._statuses = dict(statuses or {})
+             self._lock = threading.RLock()
+
+         def get(self, xid: int) -> TransactionStatus:
+    ```
+
+**是什么，为什么现在需要**
+
+核心机制是版本化 Heap 可见性。逻辑 Update 与 Delete 必须创建 MVCC Version，且扫描和索引不能暴露不可见 Tuple。
+
+**在运行时做什么**
+
+Reader 重检 Visibility，Writer 保持版本链，Abort 恢复此前可观察状态。
+
+**关键语句理解**
+
+真正要守住的边界是：Reader 重检 Visibility，Writer 保持版本链，Abort 恢复此前可观察状态。
+
+### 验证证据
+
+运行 `uv run pytest -q $(cat journey/stages/20-versioned-heap/tests.txt)`，再用 Journey Check 比较累计源码与标准 Stage。
+
+### 需要真正记住的内容
+
+真正要守住的边界是：Reader 重检 Visibility，Writer 保持版本链，Abort 恢复此前可观察状态。
+
+### 用自己的话讲清楚
+
+请解释这个 Stage 关闭的失败窗口、运行时状态如何变化，以及哪条语句守住边界。
+
+### 教材
+
+[第 4 章](https://github.com/system-in-miniature/mini-postgres/blob/main/docs/zh/tutorial/04-mvcc.md)
+
+[Complete reference patch / 完整参考补丁](https://github.com/system-in-miniature/mini-postgres/blob/main/journey/stages/20-versioned-heap/stage.patch)

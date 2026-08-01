@@ -1,0 +1,1628 @@
+# Stage 16 · Costed logical rewrites
+
+### Goal
+
+Build costed logical rewrites and explain its boundary from an executable counterexample, runtime state, and the critical statement.
+
+??? note "Deliverable files"
+    - `src/minipostgres/planner/cost.py`
+    - `src/minipostgres/planner/logical.py`
+    - `src/minipostgres/planner/rules.py`
+    - `src/minipostgres/planner/selectivity.py`
+    - `src/minipostgres/sql/binder.py`
+    - `tests/property/test_selectivity_bounds.py`
+    - `tests/unit/planner/test_constant_folding.py`
+    - `tests/unit/planner/test_cost.py`
+    - `tests/unit/planner/test_filter_pushdown.py`
+    - `tests/unit/planner/test_projection_pruning.py`
+    - `tests/unit/planner/test_selectivity.py`
+
+### The problem at this point
+
+Plans need bounded selectivity estimates, cost units, and semantics-preserving rewrites before alternatives can be compared.
+
+### Test contract
+
+#### See the failure first
+
+The focused tests force costed logical rewrites through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
+
+??? note "File diff: tests/property/test_selectivity_bounds.py"
+    ```diff
+    diff --git a/tests/property/test_selectivity_bounds.py b/tests/property/test_selectivity_bounds.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..4a8e652f579261fe60920a283e3d57757db41b68
+    --- /dev/null
+    +++ b/tests/property/test_selectivity_bounds.py
+    @@ -0,0 +1,77 @@
+    +from __future__ import annotations
+    +
+    +from hypothesis import given
+    +from hypothesis import strategies as st
+    +
+    +from minipostgres.catalog.statistics import ColumnStatistics, TableStatistics
+    +from minipostgres.planner.selectivity import SelectivityEstimator
+    +from minipostgres.row import ColumnBinding
+    +from minipostgres.sql.bound import (
+    +    BoundBinary,
+    +    BoundColumn,
+    +    BoundLiteral,
+    +    BoundUnary,
+    +)
+    +from minipostgres.types import DataType
+    +
+    +_COLUMN = BoundColumn(
+    +    ColumnBinding(1, 0),
+    +    "value",
+    +    DataType.INT64,
+    +    nullable=True,
+    +)
+    +_ESTIMATOR = SelectivityEstimator(
+    +    {
+    +        1: TableStatistics(
+    +            1,
+    +            100,
+    +            2,
+    +            {
+    +                0: ColumnStatistics(
+    +                    0.2,
+    +                    80,
+    +                    0,
+    +                    99,
+    +                    ((0, 0.05),),
+    +                    (1, 25, 50, 75, 99),
+    +                )
+    +            },
+    +        )
+    +    }
+    +)
+    +
+    +
+    +@st.composite
+    +def _predicate_trees(
+    +    draw: st.DrawFn,
+    +    *,
+    +    depth: int = 0,
+    +) -> object:
+    +    if depth >= 4 or draw(st.booleans()):
+    +        operator = draw(st.sampled_from(("=", "!=", "<", "<=", ">", ">=")))
+    +        value = draw(st.integers(min_value=-1000, max_value=1000))
+    +        return BoundBinary(
+    +            _COLUMN,
+    +            operator,
+    +            BoundLiteral(value, DataType.INT64, False),
+    +            DataType.BOOLEAN,
+    +            nullable=True,
+    +        )
+    +    child = draw(_predicate_trees(depth=depth + 1))
+    +    if draw(st.booleans()):
+    +        return BoundUnary("NOT", child, DataType.BOOLEAN, nullable=True)  # type: ignore[arg-type]
+    +    other = draw(_predicate_trees(depth=depth + 1))
+    +    return BoundBinary(  # type: ignore[arg-type]
+    +        child,
+    +        draw(st.sampled_from(("AND", "OR"))),
+    +        other,
+    +        DataType.BOOLEAN,
+    +        nullable=True,
+    +    )
+    +
+    +
+    +@given(_predicate_trees())
+    +def test_every_selectivity_is_a_probability(predicate: object) -> None:
+    +    estimate = _ESTIMATOR.estimate(predicate)  # type: ignore[arg-type]
+    +
+    +    assert 0.0 <= estimate <= 1.0
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The focused tests force costed logical rewrites through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
+
+**Key test statement**
+
+```python
+assert expressions
+```
+
+This assertion binds the observable result to the Stage's state, visibility, or durability boundary rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the semantic, ordering, ownership, or recovery boundary just introduced.
+
+??? note "File diff: tests/unit/planner/test_constant_folding.py"
+    ```diff
+    diff --git a/tests/unit/planner/test_constant_folding.py b/tests/unit/planner/test_constant_folding.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..b46b7de88136a8ab37dedd0d31a18b2c46b263e5
+    --- /dev/null
+    +++ b/tests/unit/planner/test_constant_folding.py
+    @@ -0,0 +1,86 @@
+    +from __future__ import annotations
+    +
+    +import pytest
+    +
+    +from minipostgres.errors import NumericOverflow
+    +from minipostgres.planner.logical import LogicalValues
+    +from minipostgres.planner.rules import RuleOptimizer, fold_expression
+    +from minipostgres.sql.bound import BoundBinary, BoundLiteral
+    +from minipostgres.types import INT64_MAX, DataType
+    +
+    +
+    +def _literal(
+    +    value: int | bool | None,
+    +    data_type: DataType,
+    +) -> BoundLiteral:
+    +    return BoundLiteral(value, data_type, nullable=value is None)
+    +
+    +
+    +def _binary(
+    +    left: BoundLiteral,
+    +    operator: str,
+    +    right: BoundLiteral,
+    +    data_type: DataType,
+    +) -> BoundBinary:
+    +    return BoundBinary(
+    +        left,
+    +        operator,
+    +        right,
+    +        data_type,
+    +        nullable=left.nullable or right.nullable,
+    +    )
+    +
+    +
+    +def test_constant_folding_preserves_sql_null_logic() -> None:
+    +    expression = _binary(
+    +        _literal(True, DataType.BOOLEAN),
+    +        "AND",
+    +        _literal(None, DataType.BOOLEAN),
+    +        DataType.BOOLEAN,
+    +    )
+    +    addition = _binary(
+    +        _literal(2, DataType.INT64),
+    +        "+",
+    +        _literal(3, DataType.INT64),
+    +        DataType.INT64,
+    +    )
+    +
+    +    assert fold_expression(expression) == BoundLiteral(
+    +        None,
+    +        DataType.BOOLEAN,
+    +        nullable=True,
+    +    )
+    +    assert fold_expression(addition) == BoundLiteral(
+    +        5,
+    +        DataType.INT64,
+    +        nullable=False,
+    +    )
+    +
+    +
+    +def test_constant_folding_preserves_numeric_overflow() -> None:
+    +    expression = _binary(
+    +        _literal(INT64_MAX, DataType.INT64),
+    +        "+",
+    +        _literal(1, DataType.INT64),
+    +        DataType.INT64,
+    +    )
+    +
+    +    with pytest.raises(NumericOverflow):
+    +        fold_expression(expression)
+    +
+    +
+    +def test_false_or_unknown_filter_becomes_empty_values(
+    +    planner_catalog,
+    +) -> None:
+    +    from minipostgres.planner.planner import Planner
+    +    from minipostgres.sql.binder import Binder
+    +    from minipostgres.sql.parser import parse
+    +
+    +    bound = Binder(planner_catalog).bind(
+    +        parse("SELECT id FROM users WHERE NULL")
+    +    )
+    +
+    +    rewritten = RuleOptimizer().rewrite(Planner().logical(bound))
+    +
+    +    assert isinstance(rewritten.child, LogicalValues)  # type: ignore[union-attr]
+    +    assert rewritten.child.rows == ()  # type: ignore[union-attr]
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The focused tests force costed logical rewrites through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
+
+**Key test statement**
+
+```python
+assert expressions
+```
+
+This assertion binds the observable result to the Stage's state, visibility, or durability boundary rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the semantic, ordering, ownership, or recovery boundary just introduced.
+
+??? note "File diff: tests/unit/planner/test_cost.py"
+    ```diff
+    diff --git a/tests/unit/planner/test_cost.py b/tests/unit/planner/test_cost.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..da60fca36fad096ac1c770cecb4d002d68e691d7
+    --- /dev/null
+    +++ b/tests/unit/planner/test_cost.py
+    @@ -0,0 +1,43 @@
+    +from __future__ import annotations
+    +
+    +import pytest
+    +
+    +from minipostgres.planner.cost import Cost, CostModel
+    +
+    +
+    +def test_cost_is_immutable_and_additive() -> None:
+    +    assert Cost(1.0, 3.0) + Cost(2.0, 5.0) == Cost(3.0, 8.0)
+    +    with pytest.raises(ValueError, match="startup"):
+    +        Cost(-1.0, 1.0)
+    +    with pytest.raises(ValueError, match="total"):
+    +        Cost(2.0, 1.0)
+    +
+    +
+    +def test_scan_costs_are_monotonic_and_index_pays_heap_fetches() -> None:
+    +    model = CostModel()
+    +    assert model.seq_scan(pages=100, rows=1_000) > model.seq_scan(10, 100)
+    +    sparse = model.index_scan(index_height=3, matching_rows=2, heap_pages=2)
+    +    dense = model.index_scan(index_height=3, matching_rows=900, heap_pages=90)
+    +    assert sparse < dense
+    +    assert dense.total > sparse.total
+    +
+    +
+    +def test_hash_join_builds_smaller_side_and_sort_is_n_log_n() -> None:
+    +    model = CostModel()
+    +    assert model.hash_join(100, 10_000) == model.hash_join(10_000, 100)
+    +    assert model.sort(10_000) > 10 * model.sort(100)
+    +
+    +
+    +def test_operator_costs_reject_negative_cardinalities() -> None:
+    +    model = CostModel()
+    +    with pytest.raises(ValueError, match="nonnegative"):
+    +        model.seq_scan(-1, 1)
+    +    with pytest.raises(ValueError, match="nonnegative"):
+    +        model.nested_loop(-1, 1)
+    +
+    +
+    +def test_limit_only_consumes_needed_fraction_of_child_work() -> None:
+    +    model = CostModel()
+    +    child = Cost(startup=2.0, total=102.0)
+    +    assert model.limit(child, input_rows=1_000, limit=10) == Cost(2.0, 3.0)
+    +    assert model.limit(child, input_rows=0, limit=10) == child
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The focused tests force costed logical rewrites through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
+
+**Key test statement**
+
+```python
+assert expressions
+```
+
+This assertion binds the observable result to the Stage's state, visibility, or durability boundary rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the semantic, ordering, ownership, or recovery boundary just introduced.
+
+??? note "File diff: tests/unit/planner/test_filter_pushdown.py"
+    ```diff
+    diff --git a/tests/unit/planner/test_filter_pushdown.py b/tests/unit/planner/test_filter_pushdown.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..4c9db3edc3ee85c57ee32a42e1de46bac8912fd5
+    --- /dev/null
+    +++ b/tests/unit/planner/test_filter_pushdown.py
+    @@ -0,0 +1,44 @@
+    +from __future__ import annotations
+    +
+    +from minipostgres.planner.logical import LogicalFilter, LogicalJoin, LogicalProject
+    +from minipostgres.planner.planner import Planner
+    +from minipostgres.planner.rules import RuleOptimizer
+    +from minipostgres.sql.binder import Binder
+    +from minipostgres.sql.parser import parse
+    +
+    +
+    +def test_filter_pushes_to_only_referenced_join_side(
+    +    planner_catalog,
+    +) -> None:
+    +    bound = Binder(planner_catalog).bind(
+    +        parse(
+    +            "SELECT u.name, o.total "
+    +            "FROM users u JOIN orders o ON u.id = o.user_id "
+    +            "WHERE u.age > 18"
+    +        )
+    +    )
+    +
+    +    rewritten = RuleOptimizer().rewrite(Planner().logical(bound))
+    +
+    +    assert isinstance(rewritten, LogicalProject)
+    +    assert isinstance(rewritten.child, LogicalJoin)
+    +    assert isinstance(rewritten.child.left, LogicalFilter)
+    +    assert not isinstance(rewritten.child.right, LogicalFilter)
+    +
+    +
+    +def test_cross_side_filter_stays_above_join(
+    +    planner_catalog,
+    +) -> None:
+    +    bound = Binder(planner_catalog).bind(
+    +        parse(
+    +            "SELECT u.name FROM users u "
+    +            "JOIN orders o ON u.id = o.user_id "
+    +            "WHERE u.age > o.id"
+    +        )
+    +    )
+    +
+    +    rewritten = RuleOptimizer().rewrite(Planner().logical(bound))
+    +
+    +    assert isinstance(rewritten, LogicalProject)
+    +    assert isinstance(rewritten.child, LogicalFilter)
+    +    assert isinstance(rewritten.child.child, LogicalJoin)
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The focused tests force costed logical rewrites through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
+
+**Key test statement**
+
+```python
+assert expressions
+```
+
+This assertion binds the observable result to the Stage's state, visibility, or durability boundary rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the semantic, ordering, ownership, or recovery boundary just introduced.
+
+??? note "File diff: tests/unit/planner/test_projection_pruning.py"
+    ```diff
+    diff --git a/tests/unit/planner/test_projection_pruning.py b/tests/unit/planner/test_projection_pruning.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..1decc9fba29a0ec19b2b4e6d75a5f1894cffe7e8
+    --- /dev/null
+    +++ b/tests/unit/planner/test_projection_pruning.py
+    @@ -0,0 +1,59 @@
+    +from __future__ import annotations
+    +
+    +from minipostgres.planner.logical import LogicalPlan, LogicalScan
+    +from minipostgres.planner.planner import Planner
+    +from minipostgres.planner.rules import RuleOptimizer
+    +from minipostgres.sql.binder import Binder
+    +from minipostgres.sql.parser import parse
+    +
+    +
+    +def _scans(plan: LogicalPlan) -> tuple[LogicalScan, ...]:
+    +    found: list[LogicalScan] = []
+    +
+    +    def visit(node: LogicalPlan) -> None:
+    +        if isinstance(node, LogicalScan):
+    +            found.append(node)
+    +            return
+    +        child = getattr(node, "child", None)
+    +        if isinstance(child, LogicalPlan):
+    +            visit(child)
+    +        left = getattr(node, "left", None)
+    +        right = getattr(node, "right", None)
+    +        if isinstance(left, LogicalPlan):
+    +            visit(left)
+    +        if isinstance(right, LogicalPlan):
+    +            visit(right)
+    +
+    +    visit(plan)
+    +    return tuple(found)
+    +
+    +
+    +def test_projection_prunes_unneeded_scan_columns(
+    +    planner_catalog,
+    +) -> None:
+    +    bound = Binder(planner_catalog).bind(
+    +        parse("SELECT id FROM users WHERE age >= 18")
+    +    )
+    +
+    +    rewritten = RuleOptimizer().rewrite(Planner().logical(bound))
+    +
+    +    (scan,) = _scans(rewritten)
+    +    assert scan.required_column_ids == frozenset({0, 2})
+    +
+    +
+    +def test_join_columns_remain_required_after_filter_pushdown(
+    +    planner_catalog,
+    +) -> None:
+    +    bound = Binder(planner_catalog).bind(
+    +        parse(
+    +            "SELECT u.name, o.total "
+    +            "FROM users u JOIN orders o ON u.id = o.user_id "
+    +            "WHERE u.age >= 18"
+    +        )
+    +    )
+    +
+    +    rewritten = RuleOptimizer().rewrite(Planner().logical(bound))
+    +    users, orders = _scans(rewritten)
+    +
+    +    assert users.required_column_ids == frozenset({0, 1, 2})
+    +    assert orders.required_column_ids == frozenset({1, 2})
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The focused tests force costed logical rewrites through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
+
+**Key test statement**
+
+```python
+assert expressions
+```
+
+This assertion binds the observable result to the Stage's state, visibility, or durability boundary rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the semantic, ordering, ownership, or recovery boundary just introduced.
+
+??? note "File diff: tests/unit/planner/test_selectivity.py"
+    ```diff
+    diff --git a/tests/unit/planner/test_selectivity.py b/tests/unit/planner/test_selectivity.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..1b4f0505797485b150ed5276483457397c5b5ff0
+    --- /dev/null
+    +++ b/tests/unit/planner/test_selectivity.py
+    @@ -0,0 +1,161 @@
+    +from __future__ import annotations
+    +
+    +import pytest
+    +
+    +from minipostgres.catalog.statistics import ColumnStatistics, TableStatistics
+    +from minipostgres.planner.selectivity import (
+    +    DEFAULT_PREDICATE_SELECTIVITY,
+    +    SelectivityEstimator,
+    +)
+    +from minipostgres.row import ColumnBinding
+    +from minipostgres.sql.bound import (
+    +    BoundBinary,
+    +    BoundColumn,
+    +    BoundIsNull,
+    +    BoundLiteral,
+    +    BoundUnary,
+    +)
+    +from minipostgres.types import DataType
+    +
+    +
+    +def _column(column_id: int, data_type: DataType) -> BoundColumn:
+    +    return BoundColumn(
+    +        ColumnBinding(7, column_id),
+    +        f"column_{column_id}",
+    +        data_type,
+    +        nullable=True,
+    +    )
+    +
+    +
+    +def _literal(value: object, data_type: DataType) -> BoundLiteral:
+    +    return BoundLiteral(value, data_type, nullable=value is None)  # type: ignore[arg-type]
+    +
+    +
+    +def _binary(left: object, operator: str, right: object) -> BoundBinary:
+    +    return BoundBinary(  # type: ignore[arg-type]
+    +        left,
+    +        operator,
+    +        right,
+    +        DataType.BOOLEAN,
+    +        nullable=True,
+    +    )
+    +
+    +
+    +@pytest.fixture
+    +def estimator() -> SelectivityEstimator:
+    +    statistics = TableStatistics(
+    +        table_id=7,
+    +        row_count=100,
+    +        page_count=4,
+    +        columns={
+    +            0: ColumnStatistics(
+    +                null_fraction=0.1,
+    +                distinct_count=12,
+    +                min_value="cold-0",
+    +                max_value="hot",
+    +                most_common_values=(("hot", 0.4), ("warm", 0.1)),
+    +                histogram_bounds=("cold-0", "cold-4", "cold-9"),
+    +            ),
+    +            1: ColumnStatistics(
+    +                null_fraction=0.1,
+    +                distinct_count=90,
+    +                min_value=0,
+    +                max_value=99,
+    +                most_common_values=(),
+    +                histogram_bounds=(0, 25, 50, 75, 99),
+    +            ),
+    +        },
+    +    )
+    +    return SelectivityEstimator({7: statistics})
+    +
+    +
+    +def test_equality_uses_mcv_then_residual_distinct_fallback(
+    +    estimator: SelectivityEstimator,
+    +) -> None:
+    +    kind = _column(0, DataType.TEXT)
+    +
+    +    hot = estimator.estimate(_binary(kind, "=", _literal("hot", DataType.TEXT)))
+    +    other = estimator.estimate(
+    +        _binary(kind, "=", _literal("other", DataType.TEXT))
+    +    )
+    +
+    +    assert hot == pytest.approx(0.4)
+    +    assert other == pytest.approx((1.0 - 0.1 - 0.5) / (12 - 2))
+    +
+    +
+    +def test_range_interpolates_histogram_and_handles_reversed_operands(
+    +    estimator: SelectivityEstimator,
+    +) -> None:
+    +    score = _column(1, DataType.INT64)
+    +    less_than = _binary(score, "<", _literal(50, DataType.INT64))
+    +    reversed_greater_than = _binary(
+    +        _literal(50, DataType.INT64),
+    +        ">",
+    +        score,
+    +    )
+    +
+    +    assert estimator.estimate(less_than) == pytest.approx(0.45)
+    +    assert estimator.estimate(reversed_greater_than) == pytest.approx(0.45)
+    +
+    +
+    +def test_null_boolean_and_unknown_shapes_have_documented_estimates(
+    +    estimator: SelectivityEstimator,
+    +) -> None:
+    +    score = _column(1, DataType.INT64)
+    +    is_null = BoundIsNull(score, negated=False)
+    +    is_not_null = BoundIsNull(score, negated=True)
+    +    equality = _binary(score, "=", _literal(5, DataType.INT64))
+    +    negated = BoundUnary(
+    +        "NOT",
+    +        equality,
+    +        DataType.BOOLEAN,
+    +        nullable=True,
+    +    )
+    +
+    +    assert estimator.estimate(is_null) == pytest.approx(0.1)
+    +    assert estimator.estimate(is_not_null) == pytest.approx(0.9)
+    +    assert estimator.estimate(BoundLiteral(True, DataType.BOOLEAN, False)) == 1.0
+    +    assert estimator.estimate(BoundLiteral(False, DataType.BOOLEAN, False)) == 0.0
+    +    assert estimator.estimate(BoundLiteral(None, DataType.BOOLEAN, True)) == 0.0
+    +    assert estimator.estimate(negated) == pytest.approx(
+    +        1.0 - estimator.estimate(equality)
+    +    )
+    +    assert (
+    +        estimator.estimate(_literal(7, DataType.INT64))
+    +        == DEFAULT_PREDICATE_SELECTIVITY
+    +    )
+    +
+    +
+    +def test_and_or_use_independence_and_missing_statistics_never_raise(
+    +    estimator: SelectivityEstimator,
+    +) -> None:
+    +    score = _column(1, DataType.INT64)
+    +    left = _binary(score, "<", _literal(50, DataType.INT64))
+    +    right = _binary(score, ">", _literal(25, DataType.INT64))
+    +    left_estimate = estimator.estimate(left)
+    +    right_estimate = estimator.estimate(right)
+    +
+    +    assert estimator.estimate(_binary(left, "AND", right)) == pytest.approx(
+    +        left_estimate * right_estimate
+    +    )
+    +    assert estimator.estimate(_binary(left, "OR", right)) == pytest.approx(
+    +        left_estimate + right_estimate - left_estimate * right_estimate
+    +    )
+    +    assert (
+    +        SelectivityEstimator({}).estimate(
+    +            _binary(score, "=", _literal(1, DataType.INT64))
+    +        )
+    +        == DEFAULT_PREDICATE_SELECTIVITY
+    +    )
+    +
+    +
+    +def test_not_equal_excludes_null_rows(
+    +    estimator: SelectivityEstimator,
+    +) -> None:
+    +    kind = _column(0, DataType.TEXT)
+    +    hot = _binary(kind, "=", _literal("hot", DataType.TEXT))
+    +    not_hot = _binary(kind, "!=", _literal("hot", DataType.TEXT))
+    +
+    +    assert estimator.estimate(not_hot) == pytest.approx(
+    +        0.9 - estimator.estimate(hot)
+    +    )
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The focused tests force costed logical rewrites through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
+
+**Key test statement**
+
+```python
+assert expressions
+```
+
+This assertion binds the observable result to the Stage's state, visibility, or durability boundary rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the semantic, ordering, ownership, or recovery boundary just introduced.
+
+### Basic concepts
+
+The central mechanism is costed logical rewrites. Plans need bounded selectivity estimates, cost units, and semantics-preserving rewrites before alternatives can be compared.
+
+### Why this mechanism is necessary
+
+Plans need bounded selectivity estimates, cost units, and semantics-preserving rewrites before alternatives can be compared. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+
+### Runtime mental model
+
+Every rewrite preserves output schema and meaning, while every estimate stays within physical bounds.
+
+### Mechanism blocks
+
+#### Costed logical rewrites mechanism
+
+Every rewrite preserves output schema and meaning, while every estimate stays within physical bounds.
+
+??? note "File diff: src/minipostgres/planner/cost.py"
+    ```diff
+    diff --git a/src/minipostgres/planner/cost.py b/src/minipostgres/planner/cost.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..a1236f1850a877d7c886b9707658ebb83fed02e5
+    --- /dev/null
+    +++ b/src/minipostgres/planner/cost.py
+    @@ -0,0 +1,141 @@
+    +"""Small, explicit relative-cost model for physical planning."""
+    +
+    +from __future__ import annotations
+    +
+    +import math
+    +from dataclasses import dataclass
+    +from functools import total_ordering
+    +
+    +SEQ_PAGE_COST = 1.0
+    +RANDOM_PAGE_COST = 4.0
+    +CPU_TUPLE_COST = 0.01
+    +CPU_OPERATOR_COST = 0.0025
+    +
+    +
+    +@total_ordering
+    +@dataclass(frozen=True, slots=True)
+    +class Cost:
+    +    """Startup and total work in relative units, never wall-clock time."""
+    +
+    +    startup: float
+    +    total: float
+    +
+    +    def __post_init__(self) -> None:
+    +        if not math.isfinite(self.startup) or self.startup < 0:
+    +            raise ValueError("startup cost must be finite and nonnegative")
+    +        if not math.isfinite(self.total) or self.total < self.startup:
+    +            raise ValueError("total cost must be finite and at least startup cost")
+    +
+    +    def __add__(self, other: object) -> Cost:
+    +        if not isinstance(other, Cost):
+    +            return NotImplemented
+    +        return Cost(
+    +            startup=self.startup + other.startup,
+    +            total=self.total + other.total,
+    +        )
+    +
+    +    def __mul__(self, factor: object) -> Cost:
+    +        if not isinstance(factor, (int, float)):
+    +            return NotImplemented
+    +        if not math.isfinite(factor) or factor < 0:
+    +            raise ValueError("cost multiplier must be finite and nonnegative")
+    +        return Cost(self.startup * factor, self.total * factor)
+    +
+    +    def __rmul__(self, factor: object) -> Cost:
+    +        return self * factor
+    +
+    +    def __lt__(self, other: object) -> bool:
+    +        if not isinstance(other, Cost):
+    +            return NotImplemented
+    +        return (self.total, self.startup) < (other.total, other.startup)
+    +
+    +
+    +class CostModel:
+    +    """Cost common MiniPostgres operators with deterministic formulas."""
+    +
+    +    def seq_scan(self, pages: float, rows: float) -> Cost:
+    +        _nonnegative(pages, rows)
+    +        return Cost(0.0, pages * SEQ_PAGE_COST + rows * CPU_TUPLE_COST)
+    +
+    +    def index_scan(
+    +        self,
+    +        index_height: float,
+    +        matching_rows: float,
+    +        heap_pages: float,
+    +    ) -> Cost:
+    +        _nonnegative(index_height, matching_rows, heap_pages)
+    +        startup = index_height * RANDOM_PAGE_COST
+    +        total = (
+    +            startup
+    +            + heap_pages * RANDOM_PAGE_COST
+    +            + matching_rows * (CPU_TUPLE_COST + CPU_OPERATOR_COST)
+    +        )
+    +        return Cost(startup, total)
+    +
+    +    def filter(self, child: Cost, input_rows: float) -> Cost:
+    +        _nonnegative(input_rows)
+    +        return Cost(
+    +            child.startup,
+    +            child.total + input_rows * CPU_OPERATOR_COST,
+    +        )
+    +
+    +    def projection(
+    +        self,
+    +        child: Cost,
+    +        output_rows: float,
+    +        expression_count: float = 1,
+    +    ) -> Cost:
+    +        _nonnegative(output_rows, expression_count)
+    +        return Cost(
+    +            child.startup,
+    +            child.total
+    +            + output_rows * expression_count * CPU_OPERATOR_COST,
+    +        )
+    +
+    +    def nested_loop(self, left_rows: float, right_rows: float) -> Cost:
+    +        _nonnegative(left_rows, right_rows)
+    +        comparisons = left_rows * right_rows
+    +        return Cost(0.0, comparisons * (CPU_TUPLE_COST + CPU_OPERATOR_COST))
+    +
+    +    def hash_join(self, left_rows: float, right_rows: float) -> Cost:
+    +        _nonnegative(left_rows, right_rows)
+    +        build_rows = min(left_rows, right_rows)
+    +        probe_rows = max(left_rows, right_rows)
+    +        startup = build_rows * (CPU_TUPLE_COST + CPU_OPERATOR_COST)
+    +        total = startup + probe_rows * (
+    +            CPU_TUPLE_COST + CPU_OPERATOR_COST
+    +        )
+    +        return Cost(startup, total)
+    +
+    +    def aggregate(self, input_rows: float, group_count: float) -> Cost:
+    +        _nonnegative(input_rows, group_count)
+    +        startup = input_rows * (CPU_TUPLE_COST + CPU_OPERATOR_COST)
+    +        total = startup + group_count * CPU_TUPLE_COST
+    +        return Cost(startup, total)
+    +
+    +    def sort(self, input_rows: float) -> Cost:
+    +        _nonnegative(input_rows)
+    +        if input_rows <= 1:
+    +            work = input_rows * CPU_TUPLE_COST
+    +        else:
+    +            work = (
+    +                input_rows
+    +                * math.log2(input_rows)
+    +                * (CPU_TUPLE_COST + CPU_OPERATOR_COST)
+    +            )
+    +        return Cost(work, work)
+    +
+    +    def limit(self, child: Cost, input_rows: float, limit: float) -> Cost:
+    +        _nonnegative(input_rows, limit)
+    +        if input_rows == 0 or limit >= input_rows:
+    +            return child
+    +        fraction = limit / input_rows
+    +        return Cost(
+    +            child.startup,
+    +            child.startup + fraction * (child.total - child.startup),
+    +        )
+    +
+    +
+    +def _nonnegative(*values: float) -> None:
+    +    if any(not math.isfinite(value) or value < 0 for value in values):
+    +        raise ValueError("cost inputs must be finite and nonnegative")
+    ```
+
+??? note "File diff: src/minipostgres/planner/logical.py"
+    ```diff
+    diff --git a/src/minipostgres/planner/logical.py b/src/minipostgres/planner/logical.py
+    index d0276607619124eb577a792443ea852d3c19ddc0..943f2d3e0a5a5568fb6efae70cb9b3b19421b9eb 100644
+    --- a/src/minipostgres/planner/logical.py
+    +++ b/src/minipostgres/planner/logical.py
+    @@ -27,6 +27,8 @@ class LogicalValues(LogicalPlan):
+     @dataclass(frozen=True, slots=True)
+     class LogicalScan(LogicalPlan):
+         table: BoundTable
+    +    required_column_ids: frozenset[int] | None = None
+    +    required_column_ids: frozenset[int] | None = None
+
+
+     @dataclass(frozen=True, slots=True)
+    ```
+
+??? note "File diff: src/minipostgres/planner/rules.py"
+    ```diff
+    diff --git a/src/minipostgres/planner/rules.py b/src/minipostgres/planner/rules.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..32b4d04d38c50830527e321a03abeca535bf75e4
+    --- /dev/null
+    +++ b/src/minipostgres/planner/rules.py
+    @@ -0,0 +1,410 @@
+    +"""Semantics-preserving fixed-point rewrites over logical plans."""
+    +
+    +from __future__ import annotations
+    +
+    +from collections.abc import Iterable
+    +from dataclasses import replace
+    +from typing import cast
+    +
+    +from minipostgres.executor.expressions import evaluate
+    +from minipostgres.row import ColumnBinding, ExecutionRow
+    +from minipostgres.sql.bound import (
+    +    BoundBinary,
+    +    BoundCast,
+    +    BoundColumn,
+    +    BoundExpr,
+    +    BoundFunction,
+    +    BoundIsNull,
+    +    BoundLiteral,
+    +    BoundUnary,
+    +)
+    +from minipostgres.types import DataType
+    +
+    +from .logical import (
+    +    LogicalAggregate,
+    +    LogicalDelete,
+    +    LogicalFilter,
+    +    LogicalInsert,
+    +    LogicalJoin,
+    +    LogicalLimit,
+    +    LogicalPlan,
+    +    LogicalProject,
+    +    LogicalScan,
+    +    LogicalSort,
+    +    LogicalUpdate,
+    +    LogicalValues,
+    +)
+    +
+    +MAX_REWRITE_PASSES = 8
+    +
+    +
+    +def fold_expression(expression: BoundExpr) -> BoundExpr:
+    +    """Fold deterministic literal expression trees using SQL evaluation rules."""
+    +
+    +    if isinstance(expression, (BoundLiteral, BoundColumn)):
+    +        return expression
+    +    if isinstance(expression, BoundCast):
+    +        rewritten: BoundExpr = replace(
+    +            expression,
+    +            operand=fold_expression(expression.operand),
+    +        )
+    +    elif isinstance(expression, BoundUnary):
+    +        rewritten = replace(
+    +            expression,
+    +            operand=fold_expression(expression.operand),
+    +        )
+    +    elif isinstance(expression, BoundBinary):
+    +        rewritten = replace(
+    +            expression,
+    +            left=fold_expression(expression.left),
+    +            right=fold_expression(expression.right),
+    +        )
+    +    elif isinstance(expression, BoundIsNull):
+    +        rewritten = replace(
+    +            expression,
+    +            operand=fold_expression(expression.operand),
+    +        )
+    +    elif isinstance(expression, BoundFunction):
+    +        return replace(
+    +            expression,
+    +            arguments=tuple(
+    +                fold_expression(argument)
+    +                for argument in expression.arguments
+    +            ),
+    +        )
+    +    else:
+    +        return expression
+    +    if _contains_binding(rewritten):
+    +        return rewritten
+    +    value = evaluate(rewritten, ExecutionRow({}, {}))
+    +    return BoundLiteral(
+    +        value,
+    +        rewritten.data_type,
+    +        nullable=value is None,
+    +    )
+    +
+    +
+    +class RuleOptimizer:
+    +    """Normalize one logical tree and annotate minimum scan columns."""
+    +
+    +    def rewrite(self, plan: LogicalPlan) -> LogicalPlan:
+    +        current = plan
+    +        for _ in range(MAX_REWRITE_PASSES):
+    +            rewritten = _rewrite_bottom_up(current)
+    +            if rewritten == current:
+    +                return _prune_columns(rewritten, frozenset())
+    +            current = rewritten
+    +        raise RuntimeError("logical rewrites did not converge")
+    +
+    +
+    +def _rewrite_bottom_up(plan: LogicalPlan) -> LogicalPlan:
+    +    if isinstance(plan, LogicalValues):
+    +        return replace(
+    +            plan,
+    +            rows=tuple(
+    +                tuple(fold_expression(expression) for expression in row)
+    +                for row in plan.rows
+    +            ),
+    +        )
+    +    if isinstance(plan, LogicalScan):
+    +        return plan
+    +    if isinstance(plan, LogicalFilter):
+    +        child = _rewrite_bottom_up(plan.child)
+    +        predicate = fold_expression(plan.predicate)
+    +        if isinstance(predicate, BoundLiteral):
+    +            return child if predicate.value is True else LogicalValues(())
+    +        if isinstance(child, LogicalFilter):
+    +            return LogicalFilter(
+    +                child.child,
+    +                _and(child.predicate, predicate),
+    +            )
+    +        if isinstance(child, LogicalJoin):
+    +            return _push_filter(predicate, child)
+    +        return LogicalFilter(child, predicate)
+    +    if isinstance(plan, LogicalProject):
+    +        return replace(
+    +            plan,
+    +            child=_rewrite_bottom_up(plan.child),
+    +            items=tuple(
+    +                replace(item, expression=fold_expression(item.expression))
+    +                for item in plan.items
+    +            ),
+    +        )
+    +    if isinstance(plan, LogicalJoin):
+    +        return replace(
+    +            plan,
+    +            left=_rewrite_bottom_up(plan.left),
+    +            right=_rewrite_bottom_up(plan.right),
+    +            condition=fold_expression(plan.condition),
+    +        )
+    +    if isinstance(plan, LogicalAggregate):
+    +        aggregates = tuple(
+    +            cast(BoundFunction, fold_expression(aggregate))
+    +            for aggregate in plan.aggregates
+    +        )
+    +        return replace(
+    +            plan,
+    +            child=_rewrite_bottom_up(plan.child),
+    +            group_by=tuple(
+    +                fold_expression(expression)
+    +                for expression in plan.group_by
+    +            ),
+    +            aggregates=aggregates,
+    +        )
+    +    if isinstance(plan, LogicalSort):
+    +        return replace(
+    +            plan,
+    +            child=_rewrite_bottom_up(plan.child),
+    +            order_by=tuple(
+    +                replace(item, expression=fold_expression(item.expression))
+    +                for item in plan.order_by
+    +            ),
+    +        )
+    +    if isinstance(plan, LogicalLimit):
+    +        return replace(plan, child=_rewrite_bottom_up(plan.child))
+    +    if isinstance(plan, LogicalInsert):
+    +        return replace(plan, child=_rewrite_bottom_up(plan.child))
+    +    if isinstance(plan, LogicalUpdate):
+    +        return replace(
+    +            plan,
+    +            child=_rewrite_bottom_up(plan.child),
+    +            assignments=tuple(
+    +                replace(
+    +                    assignment,
+    +                    expression=fold_expression(assignment.expression),
+    +                )
+    +                for assignment in plan.assignments
+    +            ),
+    +        )
+    +    if isinstance(plan, LogicalDelete):
+    +        return replace(plan, child=_rewrite_bottom_up(plan.child))
+    +    return plan
+    +
+    +
+    +def _push_filter(
+    +    predicate: BoundExpr,
+    +    join: LogicalJoin,
+    +) -> LogicalPlan:
+    +    left_relations = _relation_ids(join.left)
+    +    right_relations = _relation_ids(join.right)
+    +    left_predicates: list[BoundExpr] = []
+    +    right_predicates: list[BoundExpr] = []
+    +    remaining: list[BoundExpr] = []
+    +    for conjunct in _conjuncts(predicate):
+    +        referenced = {
+    +            binding.table_id
+    +            for binding in _bindings(conjunct)
+    +        }
+    +        if referenced and referenced <= left_relations:
+    +            left_predicates.append(conjunct)
+    +        elif referenced and referenced <= right_relations:
+    +            right_predicates.append(conjunct)
+    +        else:
+    +            remaining.append(conjunct)
+    +    rewritten = replace(
+    +        join,
+    +        left=_add_filter(join.left, left_predicates),
+    +        right=_add_filter(join.right, right_predicates),
+    +    )
+    +    if not remaining:
+    +        return rewritten
+    +    return LogicalFilter(rewritten, _combine(remaining))
+    +
+    +
+    +def _add_filter(
+    +    child: LogicalPlan,
+    +    predicates: list[BoundExpr],
+    +) -> LogicalPlan:
+    +    if not predicates:
+    +        return child
+    +    predicate = _combine(predicates)
+    +    if isinstance(child, LogicalFilter):
+    +        return LogicalFilter(
+    +            child.child,
+    +            _and(child.predicate, predicate),
+    +        )
+    +    return LogicalFilter(child, predicate)
+    +
+    +
+    +def _conjuncts(expression: BoundExpr) -> tuple[BoundExpr, ...]:
+    +    if isinstance(expression, BoundBinary) and expression.operator == "AND":
+    +        return _conjuncts(expression.left) + _conjuncts(expression.right)
+    +    return (expression,)
+    +
+    +
+    +def _combine(expressions: list[BoundExpr]) -> BoundExpr:
+    +    assert expressions
+    +    combined = expressions[0]
+    +    for expression in expressions[1:]:
+    +        combined = _and(combined, expression)
+    +    return combined
+    +
+    +
+    +def _and(left: BoundExpr, right: BoundExpr) -> BoundBinary:
+    +    return BoundBinary(
+    +        left,
+    +        "AND",
+    +        right,
+    +        DataType.BOOLEAN,
+    +        nullable=left.nullable or right.nullable,
+    +    )
+    +
+    +
+    +def _prune_columns(
+    +    plan: LogicalPlan,
+    +    required: frozenset[ColumnBinding],
+    +) -> LogicalPlan:
+    +    if isinstance(plan, LogicalScan):
+    +        column_ids = frozenset(
+    +            binding.column_id
+    +            for binding in required
+    +            if binding.table_id == plan.table.metadata.table_id
+    +        )
+    +        return replace(plan, required_column_ids=column_ids)
+    +    if isinstance(plan, LogicalValues):
+    +        return plan
+    +    if isinstance(plan, LogicalFilter):
+    +        return replace(
+    +            plan,
+    +            child=_prune_columns(
+    +                plan.child,
+    +                required | _bindings(plan.predicate),
+    +            ),
+    +        )
+    +    if isinstance(plan, LogicalProject):
+    +        item_bindings = _union_bindings(
+    +            item.expression for item in plan.items
+    +        )
+    +        return replace(
+    +            plan,
+    +            child=_prune_columns(
+    +                plan.child,
+    +                required | item_bindings,
+    +            ),
+    +        )
+    +    if isinstance(plan, LogicalJoin):
+    +        all_required = required | _bindings(plan.condition)
+    +        left_relations = _relation_ids(plan.left)
+    +        right_relations = _relation_ids(plan.right)
+    +        return replace(
+    +            plan,
+    +            left=_prune_columns(
+    +                plan.left,
+    +                frozenset(
+    +                    binding
+    +                    for binding in all_required
+    +                    if binding.table_id in left_relations
+    +                ),
+    +            ),
+    +            right=_prune_columns(
+    +                plan.right,
+    +                frozenset(
+    +                    binding
+    +                    for binding in all_required
+    +                    if binding.table_id in right_relations
+    +                ),
+    +            ),
+    +        )
+    +    if isinstance(plan, LogicalAggregate):
+    +        child_required = _union_bindings(
+    +            (*plan.group_by, *plan.aggregates)
+    +        )
+    +        return replace(
+    +            plan,
+    +            child=_prune_columns(plan.child, child_required),
+    +        )
+    +    if isinstance(plan, LogicalSort):
+    +        order_bindings = _union_bindings(
+    +            item.expression for item in plan.order_by
+    +        )
+    +        return replace(
+    +            plan,
+    +            child=_prune_columns(
+    +                plan.child,
+    +                required | order_bindings,
+    +            ),
+    +        )
+    +    if isinstance(plan, LogicalLimit):
+    +        return replace(
+    +            plan,
+    +            child=_prune_columns(plan.child, required),
+    +        )
+    +    if isinstance(plan, LogicalInsert):
+    +        return replace(
+    +            plan,
+    +            child=_prune_columns(plan.child, frozenset()),
+    +        )
+    +    if isinstance(plan, LogicalUpdate):
+    +        table_bindings = frozenset(
+    +            ColumnBinding(plan.table.table_id, column.column_id)
+    +            for column in plan.table.schema.columns
+    +        )
+    +        assignment_bindings = _union_bindings(
+    +            assignment.expression for assignment in plan.assignments
+    +        )
+    +        return replace(
+    +            plan,
+    +            child=_prune_columns(
+    +                plan.child,
+    +                table_bindings | assignment_bindings,
+    +            ),
+    +        )
+    +    if isinstance(plan, LogicalDelete):
+    +        table_bindings = frozenset(
+    +            ColumnBinding(plan.table.table_id, column.column_id)
+    +            for column in plan.table.schema.columns
+    +        )
+    +        return replace(
+    +            plan,
+    +            child=_prune_columns(plan.child, table_bindings),
+    +        )
+    +    return plan
+    +
+    +
+    +def _bindings(expression: BoundExpr) -> frozenset[ColumnBinding]:
+    +    if isinstance(expression, BoundColumn):
+    +        return frozenset((expression.binding,))
+    +    if isinstance(expression, (BoundCast, BoundUnary, BoundIsNull)):
+    +        return _bindings(expression.operand)
+    +    if isinstance(expression, BoundBinary):
+    +        return _bindings(expression.left) | _bindings(expression.right)
+    +    if isinstance(expression, BoundFunction):
+    +        return _union_bindings(expression.arguments)
+    +    return frozenset()
+    +
+    +
+    +def _union_bindings(
+    +    expressions: Iterable[BoundExpr],
+    +) -> frozenset[ColumnBinding]:
+    +    result = frozenset[ColumnBinding]()
+    +    for expression in expressions:
+    +        result |= _bindings(expression)
+    +    return result
+    +
+    +
+    +def _contains_binding(expression: BoundExpr) -> bool:
+    +    return bool(_bindings(expression)) or isinstance(
+    +        expression,
+    +        BoundFunction,
+    +    )
+    +
+    +
+    +def _relation_ids(plan: LogicalPlan) -> frozenset[int]:
+    +    if isinstance(plan, LogicalScan):
+    +        return frozenset((plan.table.metadata.table_id,))
+    +    if isinstance(plan, LogicalJoin):
+    +        return _relation_ids(plan.left) | _relation_ids(plan.right)
+    +    if isinstance(
+    +        plan,
+    +        (
+    +            LogicalFilter,
+    +            LogicalProject,
+    +            LogicalAggregate,
+    +            LogicalSort,
+    +            LogicalLimit,
+    +        ),
+    +    ):
+    +        return _relation_ids(plan.child)
+    +    if isinstance(plan, (LogicalInsert, LogicalUpdate, LogicalDelete)):
+    +        return frozenset((plan.table.table_id,))
+    +    return frozenset()
+    ```
+
+??? note "File diff: src/minipostgres/planner/selectivity.py"
+    ```diff
+    diff --git a/src/minipostgres/planner/selectivity.py b/src/minipostgres/planner/selectivity.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..a7a1757ba7cb40d36b5c8394aaf9e748073e929b
+    --- /dev/null
+    +++ b/src/minipostgres/planner/selectivity.py
+    @@ -0,0 +1,287 @@
+    +"""Bounded, statistics-aware predicate selectivity estimates."""
+    +
+    +from __future__ import annotations
+    +
+    +import math
+    +from collections.abc import Mapping
+    +from itertools import pairwise
+    +from typing import cast
+    +
+    +from minipostgres.catalog.statistics import ColumnStatistics, TableStatistics
+    +from minipostgres.sql.bound import (
+    +    BoundBinary,
+    +    BoundCast,
+    +    BoundColumn,
+    +    BoundExpr,
+    +    BoundIsNull,
+    +    BoundLiteral,
+    +    BoundUnary,
+    +)
+    +from minipostgres.types import Scalar, compare_values
+    +
+    +DEFAULT_PREDICATE_SELECTIVITY = 1.0 / 3.0
+    +
+    +_COMPARISON_OPERATORS = {"=", "!=", "<>", "<", "<=", ">", ">="}
+    +_REVERSED_OPERATOR = {
+    +    "=": "=",
+    +    "!=": "!=",
+    +    "<>": "<>",
+    +    "<": ">",
+    +    "<=": ">=",
+    +    ">": "<",
+    +    ">=": "<=",
+    +}
+    +
+    +
+    +class SelectivityEstimator:
+    +    """Estimate the fraction of rows for which a predicate is SQL true."""
+    +
+    +    def __init__(
+    +        self,
+    +        statistics: Mapping[int, TableStatistics] | TableStatistics | None,
+    +    ) -> None:
+    +        if isinstance(statistics, TableStatistics):
+    +            self._tables = {statistics.table_id: statistics}
+    +        else:
+    +            self._tables = dict(statistics or {})
+    +
+    +    def estimate(self, predicate: BoundExpr) -> float:
+    +        """Return a planning estimate, never an exception or invalid probability."""
+    +
+    +        try:
+    +            return _clamp(self._estimate(predicate))
+    +        except (ArithmeticError, TypeError, ValueError):
+    +            return DEFAULT_PREDICATE_SELECTIVITY
+    +
+    +    def _estimate(self, predicate: BoundExpr) -> float:
+    +        if isinstance(predicate, BoundLiteral):
+    +            if predicate.value is True:
+    +                return 1.0
+    +            if predicate.value is False or predicate.value is None:
+    +                return 0.0
+    +            return DEFAULT_PREDICATE_SELECTIVITY
+    +        if isinstance(predicate, BoundCast):
+    +            return self._estimate(predicate.operand)
+    +        if isinstance(predicate, BoundUnary) and predicate.operator == "NOT":
+    +            return 1.0 - self.estimate(predicate.operand)
+    +        if isinstance(predicate, BoundIsNull):
+    +            column = _as_column(predicate.operand)
+    +            statistics = self._column_statistics(column)
+    +            if statistics is None:
+    +                return DEFAULT_PREDICATE_SELECTIVITY
+    +            estimate = statistics.null_fraction
+    +            return 1.0 - estimate if predicate.negated else estimate
+    +        if isinstance(predicate, BoundBinary):
+    +            if predicate.operator == "AND":
+    +                return self.estimate(predicate.left) * self.estimate(
+    +                    predicate.right
+    +                )
+    +            if predicate.operator == "OR":
+    +                left = self.estimate(predicate.left)
+    +                right = self.estimate(predicate.right)
+    +                return left + right - left * right
+    +            if predicate.operator in _COMPARISON_OPERATORS:
+    +                return self._comparison(predicate)
+    +        return DEFAULT_PREDICATE_SELECTIVITY
+    +
+    +    def _comparison(self, predicate: BoundBinary) -> float:
+    +        left_column = _as_column(predicate.left)
+    +        right_column = _as_column(predicate.right)
+    +        left_literal = _as_literal(predicate.left)
+    +        right_literal = _as_literal(predicate.right)
+    +        if left_column is not None and right_literal is not None:
+    +            return self._column_constant(
+    +                left_column,
+    +                predicate.operator,
+    +                right_literal.value,
+    +            )
+    +        if right_column is not None and left_literal is not None:
+    +            return self._column_constant(
+    +                right_column,
+    +                _REVERSED_OPERATOR[predicate.operator],
+    +                left_literal.value,
+    +            )
+    +        if left_column is not None and right_column is not None:
+    +            return self._column_column(
+    +                left_column,
+    +                predicate.operator,
+    +                right_column,
+    +            )
+    +        if left_literal is not None and right_literal is not None:
+    +            result = compare_values(
+    +                predicate.operator,
+    +                left_literal.value,
+    +                right_literal.value,
+    +            )
+    +            return 1.0 if result is True else 0.0
+    +        return DEFAULT_PREDICATE_SELECTIVITY
+    +
+    +    def _column_constant(
+    +        self,
+    +        column: BoundColumn,
+    +        operator: str,
+    +        value: Scalar,
+    +    ) -> float:
+    +        if value is None:
+    +            return 0.0
+    +        statistics = self._column_statistics(column)
+    +        if statistics is None:
+    +            return DEFAULT_PREDICATE_SELECTIVITY
+    +        if operator == "=":
+    +            return _equality(statistics, value)
+    +        if operator in {"!=", "<>"}:
+    +            return (
+    +                1.0
+    +                - statistics.null_fraction
+    +                - _equality(statistics, value)
+    +            )
+    +        return _range(statistics, operator, value)
+    +
+    +    def _column_column(
+    +        self,
+    +        left: BoundColumn,
+    +        operator: str,
+    +        right: BoundColumn,
+    +    ) -> float:
+    +        if operator != "=":
+    +            return DEFAULT_PREDICATE_SELECTIVITY
+    +        left_statistics = self._column_statistics(left)
+    +        right_statistics = self._column_statistics(right)
+    +        if left_statistics is None or right_statistics is None:
+    +            return DEFAULT_PREDICATE_SELECTIVITY
+    +        distinct = max(
+    +            left_statistics.distinct_count,
+    +            right_statistics.distinct_count,
+    +            1,
+    +        )
+    +        return (
+    +            (1.0 - left_statistics.null_fraction)
+    +            * (1.0 - right_statistics.null_fraction)
+    +            / distinct
+    +        )
+    +
+    +    def _column_statistics(
+    +        self,
+    +        column: BoundColumn | None,
+    +    ) -> ColumnStatistics | None:
+    +        if column is None:
+    +            return None
+    +        table = self._tables.get(column.binding.table_id)
+    +        if table is None:
+    +            return None
+    +        return table.columns.get(column.binding.column_id)
+    +
+    +
+    +def _as_column(expression: BoundExpr) -> BoundColumn | None:
+    +    while isinstance(expression, BoundCast):
+    +        expression = expression.operand
+    +    return expression if isinstance(expression, BoundColumn) else None
+    +
+    +
+    +def _as_literal(expression: BoundExpr) -> BoundLiteral | None:
+    +    while isinstance(expression, BoundCast):
+    +        expression = expression.operand
+    +    return expression if isinstance(expression, BoundLiteral) else None
+    +
+    +
+    +def _equality(statistics: ColumnStatistics, value: Scalar) -> float:
+    +    for common_value, frequency in statistics.most_common_values:
+    +        if _same_scalar(common_value, value):
+    +            return frequency
+    +    residual_distinct = (
+    +        statistics.distinct_count - statistics.mcv_count
+    +    )
+    +    residual_mass = (
+    +        1.0 - statistics.null_fraction - statistics.mcv_fraction
+    +    )
+    +    if residual_distinct <= 0 or residual_mass <= 0:
+    +        return 0.0
+    +    return residual_mass / residual_distinct
+    +
+    +
+    +def _range(
+    +    statistics: ColumnStatistics,
+    +    operator: str,
+    +    value: Scalar,
+    +) -> float:
+    +    mcv = sum(
+    +        frequency
+    +        for common_value, frequency in statistics.most_common_values
+    +        if compare_values(operator, common_value, value) is True
+    +    )
+    +    residual_mass = max(
+    +        0.0,
+    +        1.0 - statistics.null_fraction - statistics.mcv_fraction,
+    +    )
+    +    residual_equality = (
+    +        0.0
+    +        if any(
+    +            _same_scalar(common_value, value)
+    +            for common_value, _ in statistics.most_common_values
+    +        )
+    +        else _equality(statistics, value)
+    +    )
+    +    less_fraction = _histogram_less_fraction(statistics.histogram_bounds, value)
+    +    if operator == "<":
+    +        residual = less_fraction * residual_mass
+    +    elif operator == "<=":
+    +        residual = less_fraction * residual_mass + residual_equality
+    +    elif operator == ">":
+    +        residual = (1.0 - less_fraction) * residual_mass
+    +        residual -= residual_equality
+    +    elif operator == ">=":
+    +        residual = (1.0 - less_fraction) * residual_mass
+    +    else:
+    +        return DEFAULT_PREDICATE_SELECTIVITY
+    +    return mcv + max(0.0, residual)
+    +
+    +
+    +def _histogram_less_fraction(
+    +    bounds: tuple[Scalar, ...],
+    +    value: Scalar,
+    +) -> float:
+    +    if not bounds:
+    +        return 0.5
+    +    if compare_values("<=", value, bounds[0]) is True:
+    +        return 0.0
+    +    if compare_values(">", value, bounds[-1]) is True:
+    +        return 1.0
+    +    if len(bounds) == 1:
+    +        return 1.0
+    +    bucket_fraction = 1.0 / (len(bounds) - 1)
+    +    for index, (lower, upper) in enumerate(pairwise(bounds)):
+    +        if compare_values("<=", value, upper) is not True:
+    +            continue
+    +        position = _interpolate(lower, upper, value)
+    +        return (index + position) * bucket_fraction
+    +    return 1.0
+    +
+    +
+    +def _interpolate(lower: Scalar, upper: Scalar, value: Scalar) -> float:
+    +    if (
+    +        type(lower) in {int, float}
+    +        and type(upper) in {int, float}
+    +        and type(value) in {int, float}
+    +    ):
+    +        numeric_lower = cast(int | float, lower)
+    +        numeric_upper = cast(int | float, upper)
+    +        numeric_value = cast(int | float, value)
+    +        width = numeric_upper - numeric_lower
+    +        if width == 0:
+    +            return 0.5
+    +        return _clamp((numeric_value - numeric_lower) / width)
+    +    if _same_scalar(value, lower):
+    +        return 0.0
+    +    if _same_scalar(value, upper):
+    +        return 1.0
+    +    return 0.5
+    +
+    +
+    +def _same_scalar(left: Scalar, right: Scalar) -> bool:
+    +    return type(left) is type(right) and left == right
+    +
+    +
+    +def _clamp(value: float) -> float:
+    +    if not math.isfinite(value):
+    +        return DEFAULT_PREDICATE_SELECTIVITY
+    +    return min(1.0, max(0.0, value))
+    ```
+
+??? note "File diff: src/minipostgres/sql/binder.py"
+    ```diff
+    diff --git a/src/minipostgres/sql/binder.py b/src/minipostgres/sql/binder.py
+    index 9f159c415ac937216fce39981583bf444802f6c0..11139a67f54927b13cd006cf757d7837f74b5496 100644
+    --- a/src/minipostgres/sql/binder.py
+    +++ b/src/minipostgres/sql/binder.py
+    @@ -375,6 +375,8 @@ class Binder:
+                 allow_aggregate=allow_aggregate,
+                 context=context,
+             )
+    +        if isinstance(bound, BoundLiteral) and bound.value is None:
+    +            return BoundLiteral(None, DataType.BOOLEAN, nullable=True)
+             if bound.data_type is not DataType.BOOLEAN:
+                 raise TypeMismatch(f"{context} expression must be BOOLEAN")
+             return bound
+    ```
+
+**What it is and why it appears**
+
+The central mechanism is costed logical rewrites. Plans need bounded selectivity estimates, cost units, and semantics-preserving rewrites before alternatives can be compared.
+
+**Runtime role**
+
+Every rewrite preserves output schema and meaning, while every estimate stays within physical bounds.
+
+**Statement understanding**
+
+The durable boundary is this: every rewrite preserves output schema and meaning, while every estimate stays within physical bounds.
+
+### Verification evidence
+
+Run `uv run pytest -q $(cat journey/stages/16-costed-rewrites/tests.txt)`, then use Journey Check to compare the cumulative source with the canonical Stage.
+
+### Durable takeaways
+
+The durable boundary is this: every rewrite preserves output schema and meaning, while every estimate stays within physical bounds.
+
+### Explain it in your own words
+
+Explain the failure window this Stage closes, how runtime state changes, and which statement protects the boundary.
+
+### Textbook
+
+[Chapter 6](https://github.com/system-in-miniature/mini-postgres/blob/main/docs/tutorial/06-planning.md)
+
+[Complete reference patch / 完整参考补丁](https://github.com/system-in-miniature/mini-postgres/blob/main/journey/stages/16-costed-rewrites/stage.patch)

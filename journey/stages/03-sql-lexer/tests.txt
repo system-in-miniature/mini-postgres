@@ -1,0 +1,2 @@
+tests/property/test_lexer_literals.py
+tests/unit/sql/test_lexer.py

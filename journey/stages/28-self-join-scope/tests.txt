@@ -1,0 +1,1 @@
+tests/contract/test_self_join_scope.py

@@ -1,0 +1,3 @@
+tests/property/test_expression_model.py
+tests/unit/executor/test_expressions.py
+tests/unit/executor/test_query_operators.py
