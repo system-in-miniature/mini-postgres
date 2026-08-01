@@ -406,8 +406,8 @@ class HeapTable:
         """Return the oldest physical member of the chain containing ``tid``."""
 
         with self._lock:
-            # 教学简化：真实 PG 通过行指针重定向/HOT 标志位 O(1) 定位；
-            # 此处 O(N) 扫描为教学简化，用显式前驱图展示版本链。
+            # 教学简化: 真实 PG 通过行指针重定向/HOT 标志位 O(1) 定位;
+            # 此处 O(N) 扫描为教学简化, 用显式前驱图展示版本链。
             predecessors = {
                 version.next_tid: candidate
                 for candidate, version in self.scan_versions()
