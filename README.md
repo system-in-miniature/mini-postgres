@@ -92,7 +92,7 @@ full-page images while treating incomplete transactions as aborted. Statistics
 remain stale after DML until explicit `ANALYZE`; a bad estimate may select a
 slower plan but cannot change query rows.
 
-## Verification
+## Verification & Benchmarks
 
 ```bash
 uv sync
@@ -101,6 +101,30 @@ uv run pyright src
 uv run pytest -q
 git diff --check
 ```
+
+On 2026-08-04, `/usr/bin/time -p .venv/bin/python -m pytest -q` completed
+with **286 passed, 1 skipped, and 0 failed**; the skip was the optional
+PostgreSQL 18 differential profile because no DSN was configured.
+
+Under the dated local protocol:
+
+- the B+Tree equality lookup was **5,816.64x** faster than a sequential scan
+  on the same 100,000-row logical dataset;
+- checkpointed WAL scan + REDO was **3.43x-4.40x** faster and redid zero heap
+  pages;
+- real `VACUUM` improved the 100,000-row median scan by **1.04x** after
+  removing 5,000 dead versions.
+
+See the [benchmark protocol](bench/PROTOCOL.md) and
+[dated report](bench/results/2026-08-04/report.md). This is a methodology
+benchmark of an educational kernel; it makes no absolute-value claims.
+
+**Benchmark-discovered fix.** Unclean startup rebuilt a predecessor map once
+per HOT-chain root, turning an N-row heap scan into **O(N^2)** work. Reusing one
+TID map makes the rebuild **O(N)**; complete `Database.open` at 10,000 rows
+changed from **449,100.98 ms to 71.83 ms (6,252.45x)**. The
+[postfix result and root-cause diagnosis](bench/results/2026-08-04-postfix/report.md)
+also preserve timeout-bounded 50,000- and 100,000-row baselines.
 
 See [SCOPE.md](SCOPE.md), [ARCHITECTURE.md](ARCHITECTURE.md),
 [BEHAVIORAL_CONTRACT.md](BEHAVIORAL_CONTRACT.md), and
