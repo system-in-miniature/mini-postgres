@@ -1,0 +1,371 @@
+{
+  "benchmark": "wal_recovery",
+  "environment": {
+    "cpu_model": "12th Gen Intel(R) Core(TM) i7-12700H",
+    "kernel": "6.18.33.2-microsoft-standard-WSL2",
+    "logical_cpu_count": 20,
+    "lscpu": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nByte Order:                              Little Endian\nAddress sizes:                           39 bits physical, 48 bits virtual\nCPU(s):                                  20\nOn-line CPU(s) list:                     0-19\nThread(s) per core:                      2\nCore(s) per socket:                      10\nSocket(s):                               1\nNUMA node(s):                            1\nVendor ID:                               GenuineIntel\nCPU family:                              6\nModel:                                   154\nModel name:                              12th Gen Intel(R) Core(TM) i7-12700H\nStepping:                                3\nCPU MHz:                                 2687.998\nBogoMIPS:                                5375.99\nVirtualization:                          VT-x\nHypervisor vendor:                       Microsoft\nVirtualization type:                     full\nL1d cache:                               480 KiB\nL1i cache:                               320 KiB\nL2 cache:                                12.5 MiB\nL3 cache:                                24 MiB\nNUMA node0 CPU(s):                       0-19\nVulnerability Gather data sampling:      Not affected\nVulnerability Ghostwrite:                Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Old microcode:             Not affected\nVulnerability Reg file data sampling:    Vulnerable: No microcode\nVulnerability Retbleed:                  Mitigation; Enhanced IBRS\nVulnerability Spec rstack overflow:      Not affected\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; PBRSB-eIBRS SW sequence; BHI BHI_DIS_S\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Not affected\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology tsc_reliable nonstop_tsc cpuid tsc_known_freq pni pclmulqdq vmx ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb sha_ni xsaveopt xsavec xgetbv1 xsaves avx_vnni vnmi umip waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize ibt flush_l1d arch_capabilities",
+    "memory": {
+      "MemAvailable": "12748184 kB",
+      "MemTotal": "16374428 kB",
+      "SwapTotal": "8388608 kB"
+    },
+    "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.31",
+    "power_state_disclaimer": "CPU governor, host power plan, thermal state, and background load are unknown; results may vary with power and scheduler state.",
+    "python_executable": "/home/jrjyan/MiniPostgres-workspace/MiniPostgres/.venv/bin/python",
+    "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
+    "wsl2_detected": true,
+    "wsl_distribution": "Ubuntu-20.04"
+  },
+  "fixture": {
+    "crash_boundary": "SIGKILL after durable Commit WAL and optional checkpoint",
+    "recovery_timing": "ControlFile.load + WalManager.open + recover(); physical row verification excluded",
+    "wal_shape": "one checksummed full-page-image record per packed heap page"
+  },
+  "generated_at": "2026-08-04T11:25:32.072201-07:00",
+  "points": [
+    {
+      "checkpoint": false,
+      "fixture": {
+        "checkpoint": false,
+        "checkpoint_lsn": 0,
+        "page_images": 76,
+        "row_count": 10000,
+        "termination": "SIGKILL (-9) after durable WAL ready signal",
+        "wal_bytes": 627040
+      },
+      "row_count": 10000,
+      "summary": {
+        "max_ms": 4.479363,
+        "median_ms": 4.164287,
+        "min_ms": 4.059983,
+        "p50_ms": 4.164287,
+        "p95_ms": 4.479363,
+        "p99_ms": 4.479363,
+        "samples": 5
+      },
+      "trials": [
+        {
+          "elapsed_ms": 4.439869,
+          "recovered_rows": 10000,
+          "redone_pages": 76
+        },
+        {
+          "elapsed_ms": 4.079613,
+          "recovered_rows": 10000,
+          "redone_pages": 76
+        },
+        {
+          "elapsed_ms": 4.059983,
+          "recovered_rows": 10000,
+          "redone_pages": 76
+        },
+        {
+          "elapsed_ms": 4.479363,
+          "recovered_rows": 10000,
+          "redone_pages": 76
+        },
+        {
+          "elapsed_ms": 4.164287,
+          "recovered_rows": 10000,
+          "redone_pages": 76
+        }
+      ],
+      "warmup": [
+        {
+          "elapsed_ms": 4.185709,
+          "recovered_rows": 10000,
+          "redone_pages": 76
+        }
+      ]
+    },
+    {
+      "checkpoint": true,
+      "fixture": {
+        "checkpoint": true,
+        "checkpoint_lsn": 627040,
+        "page_images": 76,
+        "row_count": 10000,
+        "termination": "SIGKILL (-9) after durable WAL ready signal",
+        "wal_bytes": 627084
+      },
+      "relative_speedup_vs_no_checkpoint": 3.432150872360644,
+      "row_count": 10000,
+      "summary": {
+        "max_ms": 1.328774,
+        "median_ms": 1.213317,
+        "min_ms": 1.06523,
+        "p50_ms": 1.213317,
+        "p95_ms": 1.328774,
+        "p99_ms": 1.328774,
+        "samples": 5
+      },
+      "trials": [
+        {
+          "elapsed_ms": 1.213317,
+          "recovered_rows": 10000,
+          "redone_pages": 0
+        },
+        {
+          "elapsed_ms": 1.22912,
+          "recovered_rows": 10000,
+          "redone_pages": 0
+        },
+        {
+          "elapsed_ms": 1.328774,
+          "recovered_rows": 10000,
+          "redone_pages": 0
+        },
+        {
+          "elapsed_ms": 1.124528,
+          "recovered_rows": 10000,
+          "redone_pages": 0
+        },
+        {
+          "elapsed_ms": 1.06523,
+          "recovered_rows": 10000,
+          "redone_pages": 0
+        }
+      ],
+      "warmup": [
+        {
+          "elapsed_ms": 1.209899,
+          "recovered_rows": 10000,
+          "redone_pages": 0
+        }
+      ]
+    },
+    {
+      "checkpoint": false,
+      "fixture": {
+        "checkpoint": false,
+        "checkpoint_lsn": 0,
+        "page_images": 376,
+        "row_count": 50000,
+        "termination": "SIGKILL (-9) after durable WAL ready signal",
+        "wal_bytes": 3101740
+      },
+      "row_count": 50000,
+      "summary": {
+        "max_ms": 23.565893,
+        "median_ms": 19.951849,
+        "min_ms": 17.689776,
+        "p50_ms": 19.951849,
+        "p95_ms": 23.565893,
+        "p99_ms": 23.565893,
+        "samples": 5
+      },
+      "trials": [
+        {
+          "elapsed_ms": 23.565893,
+          "recovered_rows": 50000,
+          "redone_pages": 376
+        },
+        {
+          "elapsed_ms": 17.689776,
+          "recovered_rows": 50000,
+          "redone_pages": 376
+        },
+        {
+          "elapsed_ms": 19.361306,
+          "recovered_rows": 50000,
+          "redone_pages": 376
+        },
+        {
+          "elapsed_ms": 20.822685,
+          "recovered_rows": 50000,
+          "redone_pages": 376
+        },
+        {
+          "elapsed_ms": 19.951849,
+          "recovered_rows": 50000,
+          "redone_pages": 376
+        }
+      ],
+      "warmup": [
+        {
+          "elapsed_ms": 18.552117,
+          "recovered_rows": 50000,
+          "redone_pages": 376
+        }
+      ]
+    },
+    {
+      "checkpoint": true,
+      "fixture": {
+        "checkpoint": true,
+        "checkpoint_lsn": 3101740,
+        "page_images": 376,
+        "row_count": 50000,
+        "termination": "SIGKILL (-9) after durable WAL ready signal",
+        "wal_bytes": 3101784
+      },
+      "relative_speedup_vs_no_checkpoint": 4.396122208363051,
+      "row_count": 50000,
+      "summary": {
+        "max_ms": 4.85364,
+        "median_ms": 4.538511,
+        "min_ms": 4.148346,
+        "p50_ms": 4.538511,
+        "p95_ms": 4.85364,
+        "p99_ms": 4.85364,
+        "samples": 5
+      },
+      "trials": [
+        {
+          "elapsed_ms": 4.85364,
+          "recovered_rows": 50000,
+          "redone_pages": 0
+        },
+        {
+          "elapsed_ms": 4.538511,
+          "recovered_rows": 50000,
+          "redone_pages": 0
+        },
+        {
+          "elapsed_ms": 4.504954,
+          "recovered_rows": 50000,
+          "redone_pages": 0
+        },
+        {
+          "elapsed_ms": 4.751412,
+          "recovered_rows": 50000,
+          "redone_pages": 0
+        },
+        {
+          "elapsed_ms": 4.148346,
+          "recovered_rows": 50000,
+          "redone_pages": 0
+        }
+      ],
+      "warmup": [
+        {
+          "elapsed_ms": 4.374704,
+          "recovered_rows": 50000,
+          "redone_pages": 0
+        }
+      ]
+    },
+    {
+      "checkpoint": false,
+      "fixture": {
+        "checkpoint": false,
+        "checkpoint_lsn": 0,
+        "page_images": 752,
+        "row_count": 100000,
+        "termination": "SIGKILL (-9) after durable WAL ready signal",
+        "wal_bytes": 6203364
+      },
+      "row_count": 100000,
+      "summary": {
+        "max_ms": 39.788349,
+        "median_ms": 38.372578,
+        "min_ms": 37.298492,
+        "p50_ms": 38.372578,
+        "p95_ms": 39.788349,
+        "p99_ms": 39.788349,
+        "samples": 5
+      },
+      "trials": [
+        {
+          "elapsed_ms": 37.298492,
+          "recovered_rows": 100000,
+          "redone_pages": 752
+        },
+        {
+          "elapsed_ms": 38.055193,
+          "recovered_rows": 100000,
+          "redone_pages": 752
+        },
+        {
+          "elapsed_ms": 39.788349,
+          "recovered_rows": 100000,
+          "redone_pages": 752
+        },
+        {
+          "elapsed_ms": 39.473935,
+          "recovered_rows": 100000,
+          "redone_pages": 752
+        },
+        {
+          "elapsed_ms": 38.372578,
+          "recovered_rows": 100000,
+          "redone_pages": 752
+        }
+      ],
+      "warmup": [
+        {
+          "elapsed_ms": 37.621577,
+          "recovered_rows": 100000,
+          "redone_pages": 752
+        }
+      ]
+    },
+    {
+      "checkpoint": true,
+      "fixture": {
+        "checkpoint": true,
+        "checkpoint_lsn": 6203364,
+        "page_images": 752,
+        "row_count": 100000,
+        "termination": "SIGKILL (-9) after durable WAL ready signal",
+        "wal_bytes": 6203408
+      },
+      "relative_speedup_vs_no_checkpoint": 4.183580446362513,
+      "row_count": 100000,
+      "summary": {
+        "max_ms": 9.518824,
+        "median_ms": 9.172186,
+        "min_ms": 8.721775,
+        "p50_ms": 9.172186,
+        "p95_ms": 9.518824,
+        "p99_ms": 9.518824,
+        "samples": 5
+      },
+      "trials": [
+        {
+          "elapsed_ms": 9.38784,
+          "recovered_rows": 100000,
+          "redone_pages": 0
+        },
+        {
+          "elapsed_ms": 9.172186,
+          "recovered_rows": 100000,
+          "redone_pages": 0
+        },
+        {
+          "elapsed_ms": 9.159053,
+          "recovered_rows": 100000,
+          "redone_pages": 0
+        },
+        {
+          "elapsed_ms": 8.721775,
+          "recovered_rows": 100000,
+          "redone_pages": 0
+        },
+        {
+          "elapsed_ms": 9.518824,
+          "recovered_rows": 100000,
+          "redone_pages": 0
+        }
+      ],
+      "warmup": [
+        {
+          "elapsed_ms": 8.365942,
+          "recovered_rows": 100000,
+          "redone_pages": 0
+        }
+      ]
+    }
+  ],
+  "protocol": {
+    "formal_runs": 5,
+    "latency_percentiles": "nearest-rank",
+    "positioning": "教学实现的方法论基准，不与生产系统对比绝对值 (methodology benchmark for an educational implementation; absolute values are not comparisons with production systems).",
+    "throughput_spread": "median absolute deviation (MAD)",
+    "time_budget": "each measured point <2 minutes; full suite <15 minutes",
+    "warmup_runs": 1
+  },
+  "schema_version": 1,
+  "source_commit": "60930759b801feb63e67fdbfa5b988fd3ebd5779"
+}

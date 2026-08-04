@@ -1,0 +1,188 @@
+{
+  "benchmark": "insert_throughput",
+  "environment": {
+    "cpu_model": "12th Gen Intel(R) Core(TM) i7-12700H",
+    "kernel": "6.18.33.2-microsoft-standard-WSL2",
+    "logical_cpu_count": 20,
+    "lscpu": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nByte Order:                              Little Endian\nAddress sizes:                           39 bits physical, 48 bits virtual\nCPU(s):                                  20\nOn-line CPU(s) list:                     0-19\nThread(s) per core:                      2\nCore(s) per socket:                      10\nSocket(s):                               1\nNUMA node(s):                            1\nVendor ID:                               GenuineIntel\nCPU family:                              6\nModel:                                   154\nModel name:                              12th Gen Intel(R) Core(TM) i7-12700H\nStepping:                                3\nCPU MHz:                                 2687.998\nBogoMIPS:                                5375.99\nVirtualization:                          VT-x\nHypervisor vendor:                       Microsoft\nVirtualization type:                     full\nL1d cache:                               480 KiB\nL1i cache:                               320 KiB\nL2 cache:                                12.5 MiB\nL3 cache:                                24 MiB\nNUMA node0 CPU(s):                       0-19\nVulnerability Gather data sampling:      Not affected\nVulnerability Ghostwrite:                Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Old microcode:             Not affected\nVulnerability Reg file data sampling:    Vulnerable: No microcode\nVulnerability Retbleed:                  Mitigation; Enhanced IBRS\nVulnerability Spec rstack overflow:      Not affected\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; PBRSB-eIBRS SW sequence; BHI BHI_DIS_S\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Not affected\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology tsc_reliable nonstop_tsc cpuid tsc_known_freq pni pclmulqdq vmx ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb sha_ni xsaveopt xsavec xgetbv1 xsaves avx_vnni vnmi umip waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize ibt flush_l1d arch_capabilities",
+    "memory": {
+      "MemAvailable": "12745580 kB",
+      "MemTotal": "16374428 kB",
+      "SwapTotal": "8388608 kB"
+    },
+    "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.31",
+    "power_state_disclaimer": "CPU governor, host power plan, thermal state, and background load are unknown; results may vary with power and scheduler state.",
+    "python_executable": "/home/jrjyan/MiniPostgres-workspace/MiniPostgres/.venv/bin/python",
+    "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
+    "wsl2_detected": true,
+    "wsl_distribution": "Ubuntu-20.04"
+  },
+  "fixture": {
+    "rows_per_trial": 1000,
+    "statement_shape": "one single-row INSERT statement per row",
+    "timed_boundary": "after CREATE TABLE through final COMMIT"
+  },
+  "generated_at": "2026-08-04T11:25:10.087824-07:00",
+  "modes": {
+    "autocommit": {
+      "relative_to_autocommit": 1.0,
+      "summary": {
+        "max_rows_per_second": 72.23482061100451,
+        "median_rows_per_second": 70.92964677080595,
+        "min_rows_per_second": 70.15971272768857,
+        "samples": 5,
+        "spread_mad_rows_per_second": 0.6554618857196317
+      },
+      "trials": [
+        {
+          "elapsed_seconds": 13.843738955,
+          "rows": 1000,
+          "rows_per_second": 72.23482061100451,
+          "wal_bytes_before_close": 8321000
+        },
+        {
+          "elapsed_seconds": 13.969385795,
+          "rows": 1000,
+          "rows_per_second": 71.58510865652558,
+          "wal_bytes_before_close": 8321000
+        },
+        {
+          "elapsed_seconds": 14.190990152,
+          "rows": 1000,
+          "rows_per_second": 70.4672464210727,
+          "wal_bytes_before_close": 8321000
+        },
+        {
+          "elapsed_seconds": 14.25319405,
+          "rows": 1000,
+          "rows_per_second": 70.15971272768857,
+          "wal_bytes_before_close": 8321000
+        },
+        {
+          "elapsed_seconds": 14.09847709,
+          "rows": 1000,
+          "rows_per_second": 70.92964677080595,
+          "wal_bytes_before_close": 8321000
+        }
+      ],
+      "warmup": [
+        {
+          "elapsed_seconds": 14.073680105,
+          "rows": 1000,
+          "rows_per_second": 71.05462057821869,
+          "wal_bytes_before_close": 8321000
+        }
+      ]
+    },
+    "batch_100": {
+      "relative_to_autocommit": 0.9529925460302683,
+      "summary": {
+        "max_rows_per_second": 103.15952090878123,
+        "median_rows_per_second": 67.59542466513795,
+        "min_rows_per_second": 66.39762409142682,
+        "samples": 5,
+        "spread_mad_rows_per_second": 1.1978005737111346
+      },
+      "trials": [
+        {
+          "elapsed_seconds": 9.69372474,
+          "rows": 1000,
+          "rows_per_second": 103.15952090878123,
+          "wal_bytes_before_close": 8249720
+        },
+        {
+          "elapsed_seconds": 11.45394273,
+          "rows": 1000,
+          "rows_per_second": 87.30618124890869,
+          "wal_bytes_before_close": 8249720
+        },
+        {
+          "elapsed_seconds": 15.045750428,
+          "rows": 1000,
+          "rows_per_second": 66.46394972357174,
+          "wal_bytes_before_close": 8249720
+        },
+        {
+          "elapsed_seconds": 15.060779865,
+          "rows": 1000,
+          "rows_per_second": 66.39762409142682,
+          "wal_bytes_before_close": 8249720
+        },
+        {
+          "elapsed_seconds": 14.793900696,
+          "rows": 1000,
+          "rows_per_second": 67.59542466513795,
+          "wal_bytes_before_close": 8249720
+        }
+      ],
+      "warmup": [
+        {
+          "elapsed_seconds": 9.482107004,
+          "rows": 1000,
+          "rows_per_second": 105.46179236093337,
+          "wal_bytes_before_close": 8249720
+        }
+      ]
+    },
+    "batch_1000": {
+      "relative_to_autocommit": 0.9555614928149923,
+      "summary": {
+        "max_rows_per_second": 69.03097989090072,
+        "median_rows_per_second": 67.77763915315143,
+        "min_rows_per_second": 66.79981223053741,
+        "samples": 5,
+        "spread_mad_rows_per_second": 0.8644062117733995
+      },
+      "trials": [
+        {
+          "elapsed_seconds": 14.65511103,
+          "rows": 1000,
+          "rows_per_second": 68.23557992518327,
+          "wal_bytes_before_close": 8249072
+        },
+        {
+          "elapsed_seconds": 14.944727015,
+          "rows": 1000,
+          "rows_per_second": 66.91323294137803,
+          "wal_bytes_before_close": 8249072
+        },
+        {
+          "elapsed_seconds": 14.97010196,
+          "rows": 1000,
+          "rows_per_second": 66.79981223053741,
+          "wal_bytes_before_close": 8249072
+        },
+        {
+          "elapsed_seconds": 14.754128537,
+          "rows": 1000,
+          "rows_per_second": 67.77763915315143,
+          "wal_bytes_before_close": 8249072
+        },
+        {
+          "elapsed_seconds": 14.48624953,
+          "rows": 1000,
+          "rows_per_second": 69.03097989090072,
+          "wal_bytes_before_close": 8249072
+        }
+      ],
+      "warmup": [
+        {
+          "elapsed_seconds": 14.634104488,
+          "rows": 1000,
+          "rows_per_second": 68.33352876631449,
+          "wal_bytes_before_close": 8249072
+        }
+      ]
+    }
+  },
+  "protocol": {
+    "formal_runs": 5,
+    "latency_percentiles": "nearest-rank",
+    "positioning": "教学实现的方法论基准，不与生产系统对比绝对值 (methodology benchmark for an educational implementation; absolute values are not comparisons with production systems).",
+    "throughput_spread": "median absolute deviation (MAD)",
+    "time_budget": "each measured point <2 minutes; full suite <15 minutes",
+    "warmup_runs": 1
+  },
+  "schema_version": 1,
+  "source_commit": "60930759b801feb63e67fdbfa5b988fd3ebd5779"
+}
