@@ -163,30 +163,11 @@ class HeapTable:
         """Resolve the newest committed-or-own version after a writer wait."""
 
         with self._lock:
-            current: TID | None = self.root_tid(tid)
-            live: tuple[TID, TupleVersion] | None = None
-            visited: set[TID] = set()
-            while current is not None:
-                if current in visited:
-                    raise CorruptPage("tuple version chain contains a cycle")
-                visited.add(current)
-                version = self.physical_version(current)
-                if version is None:
-                    break
-                creator_committed = version.xmin in {SYSTEM_XID, current_xid} or (
-                    statuses.get(version.xmin) is TransactionStatus.COMMITTED
-                )
-                deleter_committed = version.xmax != 0 and (
-                    version.xmax == current_xid
-                    or statuses.get(version.xmax) is TransactionStatus.COMMITTED
-                )
-                if creator_committed and not deleter_committed:
-                    live = (current, version)
-                current = version.next_tid
-            if live is None:
-                return None
-            live_tid, live_version = live
-            return live_tid, live_version.values
+            return self._resolve_globally_live_from_root(
+                self.root_tid(tid),
+                current_xid,
+                statuses,
+            )
 
     def scan_visible(
         self,
@@ -222,20 +203,61 @@ class HeapTable:
         """Return committed live rows for recovery-time index rebuilding."""
 
         with self._lock:
-            physical = tuple(self.scan_versions())
+            physical = dict(self.scan_versions())
             continuations = {
                 version.next_tid
-                for _, version in physical
+                for version in physical.values()
                 if version.next_tid is not None
             }
             rows: list[tuple[TID, tuple[Scalar, ...]]] = []
-            for tid, _ in physical:
+            for tid in physical:
                 if tid in continuations:
                     continue
-                resolved = self.resolve_globally_live(tid, 0, statuses)
+                resolved = self._resolve_globally_live_from_root(
+                    tid,
+                    0,
+                    statuses,
+                    physical,
+                )
                 if resolved is not None:
                     rows.append(resolved)
             return iter(rows)
+
+    def _resolve_globally_live_from_root(
+        self,
+        root_tid: TID,
+        current_xid: int,
+        statuses: TransactionStatusTable,
+        physical: dict[TID, TupleVersion] | None = None,
+    ) -> tuple[TID, tuple[Scalar, ...]] | None:
+        live: tuple[TID, TupleVersion] | None = None
+        current: TID | None = root_tid
+        visited: set[TID] = set()
+        while current is not None:
+            if current in visited:
+                raise CorruptPage("tuple version chain contains a cycle")
+            visited.add(current)
+            version = (
+                self.physical_version(current)
+                if physical is None
+                else physical.get(current)
+            )
+            if version is None:
+                break
+            creator_committed = version.xmin in {SYSTEM_XID, current_xid} or (
+                statuses.get(version.xmin) is TransactionStatus.COMMITTED
+            )
+            deleter_committed = version.xmax != 0 and (
+                version.xmax == current_xid
+                or statuses.get(version.xmax) is TransactionStatus.COMMITTED
+            )
+            if creator_committed and not deleter_committed:
+                live = (current, version)
+            current = version.next_tid
+        if live is None:
+            return None
+        live_tid, live_version = live
+        return live_tid, live_version.values
 
     def replace_version(
         self,

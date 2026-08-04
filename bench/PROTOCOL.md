@@ -60,10 +60,15 @@ B+Tree, catalog, statistics, control, FSM, and WAL formats. This setup is never
 timed and is recorded in JSON. Formal queries, plans, insert trials, recovery,
 VACUUM, and validations still run through MiniPostgres. The recovery fixture
 uses one FPI record per packed heap page, so it measures REDO/startup scaling,
-not ordinary per-row WAL amplification. Full unclean `Database.open` is not a
-REDO measurement here: the current engine unconditionally enters index rebuild
-even with no indexes, and its per-tuple root-TID lookup makes that startup path
-O(N²). That observed performance issue is recorded rather than fixed.
+not ordinary per-row WAL amplification. Full unclean `Database.open` remains
+outside the REDO-core measurement so recovery scan/REDO and derived-state
+rebuild stay separately attributable. The original 2026-08-04 snapshot exposed
+an O(N²) per-tuple root-TID lookup in that startup path; the focused pre/post
+experiment under `bench/results/2026-08-04-postfix/` instead times the complete
+`Database.open` boundary after SIGKILL.
+
+Run the focused experiment from the repository root with
+`.venv/bin/python -m bench.run_full_open --label <label> --output <path>`.
 
 ## Artifacts
 

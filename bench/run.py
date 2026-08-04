@@ -583,7 +583,7 @@ def write_report(output: Path) -> None:
             "- Query/index and dead-version datasets use bench-only valid physical-page bulk fixtures because the teaching FPI write path makes 100k-row setup exceed the suite budget.",
             "- Insert throughput alone uses the public per-row SQL path for every inserted row.",
             "- Recovery WAL uses one full-page-image record per packed heap page; it measures the WAL scan + REDO core, not ordinary per-row WAL amplification or full Database.open startup.",
-            "- Full unclean Database.open is excluded because the current engine unconditionally rebuilds indexes even when none exist and its root-TID walk is O(N²); this observed issue is recorded, not fixed.",
+            "- Full unclean Database.open remains outside this REDO-core measurement; run .venv/bin/python -m bench.run_full_open and use the focused postfix artifacts to measure startup including derived-state rebuild.",
             "- Five formal samples make p95/p99 equal to or near the maximum; raw samples remain in JSON.",
             "- Filesystem cache, WSL2 host scheduling, power state, thermal state, and background load were not controlled.",
             "",
