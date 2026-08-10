@@ -34,7 +34,7 @@ Build maintenance domain closure and explain its boundary from an executable cou
 
 ### The problem at this point
 
-Vacuum, hot fallback, metadata, differential checks, and statement rollback must agree at the public database boundary.
+Vacuum, HOT fallback, metadata, differential checks, and statement rollback must agree at the public database boundary.
 
 ### Test contract
 
@@ -75,11 +75,11 @@ A failure means the implementation crossed the semantic, ordering, ownership, or
 
 ### Basic concepts
 
-The central mechanism is maintenance domain closure. Vacuum, hot fallback, metadata, differential checks, and statement rollback must agree at the public database boundary.
+The central mechanism is maintenance domain closure. Vacuum, HOT fallback, metadata, differential checks, and statement rollback must agree at the public database boundary.
 
 ### Why this mechanism is necessary
 
-Vacuum, hot fallback, metadata, differential checks, and statement rollback must agree at the public database boundary. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+Vacuum, HOT fallback, metadata, differential checks, and statement rollback must agree at the public database boundary. Without an explicit boundary, every later mechanism would depend on accidental behavior.
 
 ### Runtime mental model
 
@@ -99,7 +99,7 @@ Public behavior, maintained metadata, and restart results describe the same comm
 
 ##### What it is and why it appears
 
-The central mechanism is maintenance domain closure. Vacuum, hot fallback, metadata, differential checks, and statement rollback must agree at the public database boundary.
+The central mechanism is maintenance domain closure. Vacuum, HOT fallback, metadata, differential checks, and statement rollback must agree at the public database boundary.
 
 ##### Runtime role
 

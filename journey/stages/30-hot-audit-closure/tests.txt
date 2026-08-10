@@ -1,1 +1,2 @@
+tests/reliability/test_index_rebuild.py
 tests/unit/maintenance/test_hot.py

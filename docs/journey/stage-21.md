@@ -13,7 +13,7 @@ Build writer locks and deadlocks and explain its boundary from an executable cou
 
 ### The problem at this point
 
-Mvcc visibility alone does not serialize conflicting writers or resolve waits-for cycles.
+MVCC visibility alone does not serialize conflicting writers or resolve waits-for cycles.
 
 ### Test contract
 
@@ -130,11 +130,11 @@ A failure means the implementation crossed the semantic, ordering, ownership, or
 
 ### Basic concepts
 
-The central mechanism is writer locks and deadlocks. Mvcc visibility alone does not serialize conflicting writers or resolve waits-for cycles.
+The central mechanism is writer locks and deadlocks. MVCC visibility alone does not serialize conflicting writers or resolve waits-for cycles.
 
 ### Why this mechanism is necessary
 
-Mvcc visibility alone does not serialize conflicting writers or resolve waits-for cycles. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+MVCC visibility alone does not serialize conflicting writers or resolve waits-for cycles. Without an explicit boundary, every later mechanism would depend on accidental behavior.
 
 ### Runtime mental model
 
@@ -387,7 +387,7 @@ Lock ownership and wait edges are explicit, and one deterministic victim breaks 
 
 **What it is and why it appears**
 
-The central mechanism is writer locks and deadlocks. Mvcc visibility alone does not serialize conflicting writers or resolve waits-for cycles.
+The central mechanism is writer locks and deadlocks. MVCC visibility alone does not serialize conflicting writers or resolve waits-for cycles.
 
 **Runtime role**
 

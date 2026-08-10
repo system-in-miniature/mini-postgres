@@ -27,7 +27,7 @@ Build wal durability and cleanup horizon and explain its boundary from an execut
 
 ### The problem at this point
 
-Commit, abort, page lsn, wal-before-data, and the oldest active snapshot must jointly bound what is durable and reclaimable.
+Commit, abort, page LSN, WAL-before-data, and the oldest active snapshot must jointly bound what is durable and reclaimable.
 
 ### Test contract
 
@@ -64,11 +64,11 @@ A failure means the implementation crossed the semantic, ordering, ownership, or
 
 ### Basic concepts
 
-The central mechanism is wal durability and cleanup horizon. Commit, abort, page lsn, wal-before-data, and the oldest active snapshot must jointly bound what is durable and reclaimable.
+The central mechanism is wal durability and cleanup horizon. Commit, abort, page LSN, WAL-before-data, and the oldest active snapshot must jointly bound what is durable and reclaimable.
 
 ### Why this mechanism is necessary
 
-Commit, abort, page lsn, wal-before-data, and the oldest active snapshot must jointly bound what is durable and reclaimable. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+Commit, abort, page LSN, WAL-before-data, and the oldest active snapshot must jointly bound what is durable and reclaimable. Without an explicit boundary, every later mechanism would depend on accidental behavior.
 
 ### Runtime mental model
 
@@ -89,7 +89,7 @@ No page outruns WAL and no tuple visible to any active snapshot crosses the clea
 
 ##### What it is and why it appears
 
-The central mechanism is wal durability and cleanup horizon. Commit, abort, page lsn, wal-before-data, and the oldest active snapshot must jointly bound what is durable and reclaimable.
+The central mechanism is wal durability and cleanup horizon. Commit, abort, page LSN, WAL-before-data, and the oldest active snapshot must jointly bound what is durable and reclaimable.
 
 ##### Runtime role
 

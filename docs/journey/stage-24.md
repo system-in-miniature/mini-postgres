@@ -12,7 +12,7 @@ Build sharp checkpoint durability and explain its boundary from an executable co
 
 ### The problem at this point
 
-Wal-before-data, commit records, page lsns, and checkpoint publication must form one crash-order proof.
+WAL-before-data, commit records, page LSNs, and checkpoint publication must form one crash-order proof.
 
 ### Test contract
 
@@ -146,11 +146,11 @@ A failure means the implementation crossed the semantic, ordering, ownership, or
 
 ### Basic concepts
 
-The central mechanism is sharp checkpoint durability. Wal-before-data, commit records, page lsns, and checkpoint publication must form one crash-order proof.
+The central mechanism is sharp checkpoint durability. WAL-before-data, commit records, page LSNs, and checkpoint publication must form one crash-order proof.
 
 ### Why this mechanism is necessary
 
-Wal-before-data, commit records, page lsns, and checkpoint publication must form one crash-order proof. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+WAL-before-data, commit records, page LSNs, and checkpoint publication must form one crash-order proof. Without an explicit boundary, every later mechanism would depend on accidental behavior.
 
 ### Runtime mental model
 
@@ -236,7 +236,7 @@ No data page outruns durable WAL, and recovery starts only from a completely pub
 
 **What it is and why it appears**
 
-The central mechanism is sharp checkpoint durability. Wal-before-data, commit records, page lsns, and checkpoint publication must form one crash-order proof.
+The central mechanism is sharp checkpoint durability. WAL-before-data, commit records, page LSNs, and checkpoint publication must form one crash-order proof.
 
 **Runtime role**
 

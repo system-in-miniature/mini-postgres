@@ -17,7 +17,7 @@ Build transaction and snapshot lifecycle and explain its boundary from an execut
 
 ### The problem at this point
 
-Mvcc rules need an owner that begins, commits, aborts, and refreshes snapshots according to isolation level.
+MVCC rules need an owner that begins, commits, aborts, and refreshes snapshots according to isolation level.
 
 ### Test contract
 
@@ -197,11 +197,11 @@ A failure means the implementation crossed the semantic, ordering, ownership, or
 
 ### Basic concepts
 
-The central mechanism is transaction and snapshot lifecycle. Mvcc rules need an owner that begins, commits, aborts, and refreshes snapshots according to isolation level.
+The central mechanism is transaction and snapshot lifecycle. MVCC rules need an owner that begins, commits, aborts, and refreshes snapshots according to isolation level.
 
 ### Why this mechanism is necessary
 
-Mvcc rules need an owner that begins, commits, aborts, and refreshes snapshots according to isolation level. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+MVCC rules need an owner that begins, commits, aborts, and refreshes snapshots according to isolation level. Without an explicit boundary, every later mechanism would depend on accidental behavior.
 
 ### Runtime mental model
 
@@ -505,7 +505,7 @@ Each statement uses the snapshot promised by its isolation level and lifecycle t
 
 **What it is and why it appears**
 
-The central mechanism is transaction and snapshot lifecycle. Mvcc rules need an owner that begins, commits, aborts, and refreshes snapshots according to isolation level.
+The central mechanism is transaction and snapshot lifecycle. MVCC rules need an owner that begins, commits, aborts, and refreshes snapshots according to isolation level.
 
 **Runtime role**
 

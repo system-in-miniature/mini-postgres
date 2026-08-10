@@ -20,7 +20,7 @@ Build logical and physical plans and explain its boundary from an executable cou
 
 ### The problem at this point
 
-Bound sql needs a separation between relational meaning and the operators chosen to execute it.
+Bound SQL needs a separation between relational meaning and the operators chosen to execute it.
 
 ### Test contract
 
@@ -54,11 +54,11 @@ A failure means the implementation crossed the semantic, ordering, ownership, or
 
 ### Basic concepts
 
-The central mechanism is logical and physical plans. Bound sql needs a separation between relational meaning and the operators chosen to execute it.
+The central mechanism is logical and physical plans. Bound SQL needs a separation between relational meaning and the operators chosen to execute it.
 
 ### Why this mechanism is necessary
 
-Bound sql needs a separation between relational meaning and the operators chosen to execute it. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+Bound SQL needs a separation between relational meaning and the operators chosen to execute it. Without an explicit boundary, every later mechanism would depend on accidental behavior.
 
 ### Runtime mental model
 
@@ -73,7 +73,7 @@ Logical plans preserve semantics while physical plans make execution strategy ex
 
 ##### What it is and why it appears
 
-The central mechanism is logical and physical plans. Bound sql needs a separation between relational meaning and the operators chosen to execute it.
+The central mechanism is logical and physical plans. Bound SQL needs a separation between relational meaning and the operators chosen to execute it.
 
 ##### Runtime role
 

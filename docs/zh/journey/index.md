@@ -37,4 +37,4 @@
 | [27](stage-27.md) | 维护领域闭环 | 9 | [11](../tutorial/11-vacuum-hot.md) |
 | [28](stage-28.md) | 自连接作用域拒绝 | 2 | [2](../tutorial/02-sql-frontend.md) |
 | [29](stage-29.md) | 跨层正确性回归 | 7 | [12](../tutorial/12-testing-methodology.md) |
-| [30](stage-30.md) | HOT 审计闭环 | 1 | [11](../tutorial/11-vacuum-hot.md) |
+| [30](stage-30.md) | HOT 审计闭环 | 2 | [11](../tutorial/11-vacuum-hot.md) |

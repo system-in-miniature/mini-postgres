@@ -26,7 +26,7 @@ Build recovery and deadlock victims and explain its boundary from an executable 
 
 ### The problem at this point
 
-Wal bytes need redo/control-state recovery while lock cancellation must unwind the selected victim completely.
+WAL bytes need redo/control-state recovery while lock cancellation must unwind the selected victim completely.
 
 ### Test contract
 
@@ -63,11 +63,11 @@ A failure means the implementation crossed the semantic, ordering, ownership, or
 
 ### Basic concepts
 
-The central mechanism is recovery and deadlock victims. Wal bytes need redo/control-state recovery while lock cancellation must unwind the selected victim completely.
+The central mechanism is recovery and deadlock victims. WAL bytes need redo/control-state recovery while lock cancellation must unwind the selected victim completely.
 
 ### Why this mechanism is necessary
 
-Wal bytes need redo/control-state recovery while lock cancellation must unwind the selected victim completely. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+WAL bytes need redo/control-state recovery while lock cancellation must unwind the selected victim completely. Without an explicit boundary, every later mechanism would depend on accidental behavior.
 
 ### Runtime mental model
 
@@ -87,7 +87,7 @@ Recovery replays a valid ordered prefix idempotently and victim cleanup releases
 
 ##### What it is and why it appears
 
-The central mechanism is recovery and deadlock victims. Wal bytes need redo/control-state recovery while lock cancellation must unwind the selected victim completely.
+The central mechanism is recovery and deadlock victims. WAL bytes need redo/control-state recovery while lock cancellation must unwind the selected victim completely.
 
 ##### Runtime role
 

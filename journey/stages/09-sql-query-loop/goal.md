@@ -24,7 +24,7 @@ Build validated dml query loop and explain its boundary from an executable count
 
 ### The problem at this point
 
-Reads and relational operators do not yet connect sql entry, modifications, constraints, and result cleanup.
+Reads and relational operators do not yet connect SQL entry, modifications, constraints, and result cleanup.
 
 ### Test contract
 
@@ -61,11 +61,11 @@ A failure means the implementation crossed the semantic, ordering, ownership, or
 
 ### Basic concepts
 
-The central mechanism is validated dml query loop. Reads and relational operators do not yet connect sql entry, modifications, constraints, and result cleanup.
+The central mechanism is validated dml query loop. Reads and relational operators do not yet connect SQL entry, modifications, constraints, and result cleanup.
 
 ### Why this mechanism is necessary
 
-Reads and relational operators do not yet connect sql entry, modifications, constraints, and result cleanup. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+Reads and relational operators do not yet connect SQL entry, modifications, constraints, and result cleanup. Without an explicit boundary, every later mechanism would depend on accidental behavior.
 
 ### Runtime mental model
 
@@ -81,7 +81,7 @@ A statement either publishes a fully validated row change or leaves table state 
 
 ##### What it is and why it appears
 
-The central mechanism is validated dml query loop. Reads and relational operators do not yet connect sql entry, modifications, constraints, and result cleanup.
+The central mechanism is validated dml query loop. Reads and relational operators do not yet connect SQL entry, modifications, constraints, and result cleanup.
 
 ##### Runtime role
 

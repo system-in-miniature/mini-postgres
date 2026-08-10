@@ -32,7 +32,7 @@ Build persistent heap files and explain its boundary from an executable countere
 
 ### The problem at this point
 
-Pages, slots, tuple bytes, disk io, replacement, and buffer ownership must compose into stable row locations.
+Pages, slots, tuple bytes, disk IO, replacement, and buffer ownership must compose into stable row locations.
 
 ### Test contract
 
@@ -1134,11 +1134,11 @@ A failure means the implementation crossed the semantic, ordering, ownership, or
 
 ### Basic concepts
 
-The central mechanism is persistent heap files. Pages, slots, tuple bytes, disk io, replacement, and buffer ownership must compose into stable row locations.
+The central mechanism is persistent heap files. Pages, slots, tuple bytes, disk IO, replacement, and buffer ownership must compose into stable row locations.
 
 ### Why this mechanism is necessary
 
-Pages, slots, tuple bytes, disk io, replacement, and buffer ownership must compose into stable row locations. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+Pages, slots, tuple bytes, disk IO, replacement, and buffer ownership must compose into stable row locations. Without an explicit boundary, every later mechanism would depend on accidental behavior.
 
 ### Runtime mental model
 
@@ -2628,7 +2628,7 @@ Pinned dirty pages reach disk through owned guards, and tuple IDs remain stable 
 
 **What it is and why it appears**
 
-The central mechanism is persistent heap files. Pages, slots, tuple bytes, disk io, replacement, and buffer ownership must compose into stable row locations.
+The central mechanism is persistent heap files. Pages, slots, tuple bytes, disk IO, replacement, and buffer ownership must compose into stable row locations.
 
 **Runtime role**
 

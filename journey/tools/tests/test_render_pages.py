@@ -158,6 +158,16 @@ class RenderPagesTest(unittest.TestCase):
         self.assertLess(len(english_agent.splitlines()), 40)
         self.assertLess(len(chinese_agent.splitlines()), 40)
 
+    def test_public_homepages_are_language_separated(self) -> None:
+        english = Path("docs/index.md").read_text()
+        chinese = Path("docs/zh/index.md").read_text()
+
+        self.assertNotRegex(english, r"[\u4e00-\u9fff]")
+        self.assertNotIn("English summary:", chinese)
+        self.assertNotIn("Learning modes", chinese)
+        self.assertIn("Learning modes", english)
+        self.assertIn("学习模式", chinese)
+
 
     def test_navigation_groups_remain_collapsible(self) -> None:
         navigation = Path("mkdocs.yml").read_text()

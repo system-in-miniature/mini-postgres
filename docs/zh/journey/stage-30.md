@@ -21,17 +21,107 @@
     - `src/minipostgres/transaction/snapshot.py`
     - `src/minipostgres/transaction/status.py`
     - `src/minipostgres/transaction/visibility.py`
+    - `tests/reliability/test_index_rebuild.py`
     - `tests/unit/maintenance/test_hot.py`
 
 ### 当前遇到的问题
 
-最终源码需要显式的 Why-level 边界与唯一共享 HOT Predicate，同时不改变既有行为。
+非正常关闭后的启动必须解析每条 HOT Chain，不能为每个 Root 重建一次 Predecessor Map 并退化成 O(N²)。
 
 ### 测试契约
 
 #### 先看会坏在哪里
 
 聚焦测试让HOT 审计闭环经历正常路径、边界值、非法输入与本 Stage 可观察的失败边界。
+
+??? note "文件差异：tests/reliability/test_index_rebuild.py"
+    ```diff
+    diff --git a/tests/reliability/test_index_rebuild.py b/tests/reliability/test_index_rebuild.py
+    index 5aab27995436a91e8fbcf991dd6ff263532a3189..e938a5e2287f9f581b33a721514d708f2d65d505 100644
+    --- a/tests/reliability/test_index_rebuild.py
+    +++ b/tests/reliability/test_index_rebuild.py
+    @@ -1,8 +1,14 @@
+    +from collections.abc import Iterator
+     from pathlib import Path
+
+    +from pytest import MonkeyPatch
+    +
+     from minipostgres.engine import Database
+    +from minipostgres.row import TID
+     from minipostgres.storage.disk import relation_path
+    +from minipostgres.storage.heap import HeapTable
+     from minipostgres.storage.identifiers import btree_relation
+    +from minipostgres.storage.tuple import TupleVersion
+
+
+     def _crash_without_cleanup(database: Database) -> None:
+    @@ -30,3 +36,45 @@ def test_unclean_startup_rebuilds_indexes_from_committed_heap(
+             assert recovered.execute(
+                 "SELECT name FROM users WHERE id = 2"
+             ).rows == (("B",),)
+    +
+    +
+    +def test_unclean_index_rebuild_scans_each_heap_once(
+    +    tmp_path: Path,
+    +    monkeypatch: MonkeyPatch,
+    +) -> None:
+    +    database = Database.open(tmp_path)
+    +    database.execute("CREATE TABLE events (id INT PRIMARY KEY, payload INT)")
+    +    for row_id in range(4):
+    +        database.execute(f"INSERT INTO events VALUES ({row_id}, {row_id})")
+    +    database.execute("UPDATE events SET payload = 99 WHERE id = 1")
+    +    _crash_without_cleanup(database)
+    +
+    +    scans = 0
+    +    original_scan_versions = HeapTable.scan_versions
+    +
+    +    def counted_scan_versions(
+    +        self: HeapTable,
+    +    ) -> Iterator[tuple[TID, TupleVersion]]:
+    +        nonlocal scans
+    +        scans += 1
+    +        return original_scan_versions(self)
+    +
+    +    monkeypatch.setattr(HeapTable, "scan_versions", counted_scan_versions)
+    +
+    +    with Database.open(tmp_path) as recovered:
+    +        startup_scans = scans
+    +        assert recovered.execute("SELECT COUNT(*) FROM events").rows == ((4,),)
+    +        table_id = recovered.catalog.table("events").table_id
+    +        access = recovered._accesses[table_id]
+    +        binding = access.indexes[0]
+    +        root_tids = binding.tree.search(binding.codec.encode((1,)))
+    +        assert len(root_tids) == 1
+    +        resolved = access._mvcc_heap().resolve_globally_live(
+    +            root_tids[0],
+    +            0,
+    +            recovered._transactions.statuses,
+    +        )
+    +        assert resolved is not None
+    +        assert resolved[1] == (1, 99)
+    +
+    +    assert startup_scans == 1
+    ```
+
+**测试锁定什么**
+
+这些测试锁定本 Stage 的正常路径、边界条件、失败可见性与恢复不变量。
+
+**如何构造反例**
+
+聚焦测试让HOT 审计闭环经历正常路径、边界值、非法输入与本 Stage 可观察的失败边界。
+
+**关键测试语句**
+
+```python
+assert recovered.execute("SELECT COUNT(*) FROM events").rows == ((4,),)
+```
+
+这条断言把可观察结果与本 Stage 的状态、可见性或持久性边界绑定，而不只检查调用返回。
+
+**失败意味着什么**
+
+失败说明实现跨越了刚建立的语义、顺序、所有权或恢复边界。
 
 ??? note "文件差异：tests/unit/maintenance/test_hot.py"
     ```diff
@@ -78,7 +168,7 @@
 **关键测试语句**
 
 ```python
-assert hot_eligible(
+assert recovered.execute("SELECT COUNT(*) FROM events").rows == ((4,),)
 ```
 
 这条断言把可观察结果与本 Stage 的状态、可见性或持久性边界绑定，而不只检查调用返回。
@@ -89,21 +179,21 @@ assert hot_eligible(
 
 ### 基本概念
 
-核心机制是HOT 审计闭环。最终源码需要显式的 Why-level 边界与唯一共享 HOT Predicate，同时不改变既有行为。
+核心机制是HOT 审计闭环。非正常关闭后的启动必须解析每条 HOT Chain，不能为每个 Root 重建一次 Predecessor Map 并退化成 O(N²)。
 
 ### 为什么需要这个机制
 
-最终源码需要显式的 Why-level 边界与唯一共享 HOT Predicate，同时不改变既有行为。 若不建立明确边界，后续机制只能依赖偶然行为。
+非正常关闭后的启动必须解析每条 HOT Chain，不能为每个 Root 重建一次 Predecessor Map 并退化成 O(N²)。 若不建立明确边界，后续机制只能依赖偶然行为。
 
 ### 运行时心智模型
 
-所有 HOT 决策使用同一 Eligibility Rule，最终重建树与验收实现完全一致。
+一个共享 TID Map 以 O(N) 重建工作解析所有合法且互不相交的 HOT Chain，同时保持 Visibility 与 Cycle Check。
 
 ### 机制板块
 
 #### HOT 审计闭环机制
 
-所有 HOT 决策使用同一 Eligibility Rule，最终重建树与验收实现完全一致。
+一个共享 TID Map 以 O(N) 重建工作解析所有合法且互不相交的 HOT Chain，同时保持 Visibility 与 Cycle Check。
 
 ??? note "文件差异：src/minipostgres/index/btree.py"
     ```diff
@@ -183,10 +273,113 @@ assert hot_eligible(
 ??? note "文件差异：src/minipostgres/storage/heap.py"
     ```diff
     diff --git a/src/minipostgres/storage/heap.py b/src/minipostgres/storage/heap.py
-    index 8762f862c06715c4749ccc9b462e8f7e381eed5e..3d5989e3cf1745315f9b2ffa8038713c94692f4a 100644
+    index 8762f862c06715c4749ccc9b462e8f7e381eed5e..d13d5ecb1109228faf5b65368b3ae4dcbfa271f4 100644
     --- a/src/minipostgres/storage/heap.py
     +++ b/src/minipostgres/storage/heap.py
-    @@ -406,8 +406,8 @@ class HeapTable:
+    @@ -163,30 +163,11 @@ class HeapTable:
+             """Resolve the newest committed-or-own version after a writer wait."""
+
+             with self._lock:
+    -            current: TID | None = self.root_tid(tid)
+    -            live: tuple[TID, TupleVersion] | None = None
+    -            visited: set[TID] = set()
+    -            while current is not None:
+    -                if current in visited:
+    -                    raise CorruptPage("tuple version chain contains a cycle")
+    -                visited.add(current)
+    -                version = self.physical_version(current)
+    -                if version is None:
+    -                    break
+    -                creator_committed = version.xmin in {SYSTEM_XID, current_xid} or (
+    -                    statuses.get(version.xmin) is TransactionStatus.COMMITTED
+    -                )
+    -                deleter_committed = version.xmax != 0 and (
+    -                    version.xmax == current_xid
+    -                    or statuses.get(version.xmax) is TransactionStatus.COMMITTED
+    -                )
+    -                if creator_committed and not deleter_committed:
+    -                    live = (current, version)
+    -                current = version.next_tid
+    -            if live is None:
+    -                return None
+    -            live_tid, live_version = live
+    -            return live_tid, live_version.values
+    +            return self._resolve_globally_live_from_root(
+    +                self.root_tid(tid),
+    +                current_xid,
+    +                statuses,
+    +            )
+
+         def scan_visible(
+             self,
+    @@ -222,21 +203,62 @@ class HeapTable:
+             """Return committed live rows for recovery-time index rebuilding."""
+
+             with self._lock:
+    -            physical = tuple(self.scan_versions())
+    +            physical = dict(self.scan_versions())
+                 continuations = {
+                     version.next_tid
+    -                for _, version in physical
+    +                for version in physical.values()
+                     if version.next_tid is not None
+                 }
+                 rows: list[tuple[TID, tuple[Scalar, ...]]] = []
+    -            for tid, _ in physical:
+    +            for tid in physical:
+                     if tid in continuations:
+                         continue
+    -                resolved = self.resolve_globally_live(tid, 0, statuses)
+    +                resolved = self._resolve_globally_live_from_root(
+    +                    tid,
+    +                    0,
+    +                    statuses,
+    +                    physical,
+    +                )
+                     if resolved is not None:
+                         rows.append(resolved)
+                 return iter(rows)
+
+    +    def _resolve_globally_live_from_root(
+    +        self,
+    +        root_tid: TID,
+    +        current_xid: int,
+    +        statuses: TransactionStatusTable,
+    +        physical: dict[TID, TupleVersion] | None = None,
+    +    ) -> tuple[TID, tuple[Scalar, ...]] | None:
+    +        live: tuple[TID, TupleVersion] | None = None
+    +        current: TID | None = root_tid
+    +        visited: set[TID] = set()
+    +        while current is not None:
+    +            if current in visited:
+    +                raise CorruptPage("tuple version chain contains a cycle")
+    +            visited.add(current)
+    +            version = (
+    +                self.physical_version(current)
+    +                if physical is None
+    +                else physical.get(current)
+    +            )
+    +            if version is None:
+    +                break
+    +            creator_committed = version.xmin in {SYSTEM_XID, current_xid} or (
+    +                statuses.get(version.xmin) is TransactionStatus.COMMITTED
+    +            )
+    +            deleter_committed = version.xmax != 0 and (
+    +                version.xmax == current_xid
+    +                or statuses.get(version.xmax) is TransactionStatus.COMMITTED
+    +            )
+    +            if creator_committed and not deleter_committed:
+    +                live = (current, version)
+    +            current = version.next_tid
+    +        if live is None:
+    +            return None
+    +        live_tid, live_version = live
+    +        return live_tid, live_version.values
+    +
+         def replace_version(
+             self,
+             tid: TID,
+    @@ -406,8 +428,8 @@ class HeapTable:
              """Return the oldest physical member of the chain containing ``tid``."""
 
              with self._lock:
@@ -315,15 +508,15 @@ assert hot_eligible(
 
 **是什么，为什么现在需要**
 
-核心机制是HOT 审计闭环。最终源码需要显式的 Why-level 边界与唯一共享 HOT Predicate，同时不改变既有行为。
+核心机制是HOT 审计闭环。非正常关闭后的启动必须解析每条 HOT Chain，不能为每个 Root 重建一次 Predecessor Map 并退化成 O(N²)。
 
 **在运行时做什么**
 
-所有 HOT 决策使用同一 Eligibility Rule，最终重建树与验收实现完全一致。
+一个共享 TID Map 以 O(N) 重建工作解析所有合法且互不相交的 HOT Chain，同时保持 Visibility 与 Cycle Check。
 
 **关键语句理解**
 
-真正要守住的边界是：所有 HOT 决策使用同一 Eligibility Rule，最终重建树与验收实现完全一致。
+真正要守住的边界是：一个共享 TID Map 以 O(N) 重建工作解析所有合法且互不相交的 HOT Chain，同时保持 Visibility 与 Cycle Check。
 
 #### 包、Fixture 与工程支撑
 
@@ -446,7 +639,7 @@ assert hot_eligible(
 
     ```diff
     diff --git a/README.md b/README.md
-    index 4299bdb57893fd035fc7fa7df28a2f34500c45f4..af2dccb12ca51e4260c900ed0a5cb2dd0c026451 100644
+    index 4299bdb57893fd035fc7fa7df28a2f34500c45f4..66987c1a09f1f76cca514a11ce50c4dddc2e19f0 100644
     --- a/README.md
     +++ b/README.md
     @@ -1,5 +1,9 @@
@@ -459,7 +652,47 @@ assert hot_eligible(
      MiniPostgres is a PostgreSQL-inspired, single-process relational database
      kernel written in Python. It is **not PostgreSQL-compatible**: there is no
      PostgreSQL wire protocol, `psql` endpoint, or claim of complete SQL
-    @@ -112,3 +116,7 @@ uv run python examples/demo.py
+    @@ -88,7 +92,7 @@ full-page images while treating incomplete transactions as aborted. Statistics
+     remain stale after DML until explicit `ANALYZE`; a bad estimate may select a
+     slower plan but cannot change query rows.
+
+    -## Verification
+    +## Verification & Benchmarks
+
+     ```bash
+     uv sync
+    @@ -98,6 +102,30 @@ uv run pytest -q
+     git diff --check
+     ```
+
+    +On 2026-08-04, `/usr/bin/time -p .venv/bin/python -m pytest -q` completed
+    +with **286 passed, 1 skipped, and 0 failed**; the skip was the optional
+    +PostgreSQL 18 differential profile because no DSN was configured.
+    +
+    +Under the dated local protocol:
+    +
+    +- the B+Tree equality lookup was **5,816.64x** faster than a sequential scan
+    +  on the same 100,000-row logical dataset;
+    +- checkpointed WAL scan + REDO was **3.43x-4.40x** faster and redid zero heap
+    +  pages;
+    +- real `VACUUM` improved the 100,000-row median scan by **1.04x** after
+    +  removing 5,000 dead versions.
+    +
+    +See the [benchmark protocol](bench/PROTOCOL.md) and
+    +[dated report](bench/results/2026-08-04/report.md). This is a methodology
+    +benchmark of an educational kernel; it makes no absolute-value claims.
+    +
+    +**Benchmark-discovered fix.** Unclean startup rebuilt a predecessor map once
+    +per HOT-chain root, turning an N-row heap scan into **O(N^2)** work. Reusing one
+    +TID map makes the rebuild **O(N)**; complete `Database.open` at 10,000 rows
+    +changed from **449,100.98 ms to 71.83 ms (6,252.45x)**. The
+    +[postfix result and root-cause diagnosis](bench/results/2026-08-04-postfix/report.md)
+    +also preserve timeout-bounded 50,000- and 100,000-row baselines.
+    +
+     See [SCOPE.md](SCOPE.md), [ARCHITECTURE.md](ARCHITECTURE.md),
+     [BEHAVIORAL_CONTRACT.md](BEHAVIORAL_CONTRACT.md), and
+     [DIFFERENCES_FROM_POSTGRESQL.md](DIFFERENCES_FROM_POSTGRESQL.md). Executable
+    @@ -112,3 +140,7 @@ uv run python examples/demo.py
      This repository is the finished-reference-project workspace.
      The course is designed after the reference project; no chapters, days, quizzes,
      or teaching handoffs are generated here.
@@ -523,7 +756,7 @@ assert hot_eligible(
 
 ### 需要真正记住的内容
 
-真正要守住的边界是：所有 HOT 决策使用同一 Eligibility Rule，最终重建树与验收实现完全一致。
+真正要守住的边界是：一个共享 TID Map 以 O(N) 重建工作解析所有合法且互不相交的 HOT Chain，同时保持 Visibility 与 Cycle Check。
 
 ### 用自己的话讲清楚
 

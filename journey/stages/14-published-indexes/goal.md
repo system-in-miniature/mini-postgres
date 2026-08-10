@@ -22,7 +22,7 @@ Build published table indexes and explain its boundary from an executable counte
 
 ### The problem at this point
 
-A standalone btree is not useful until table writes and catalog metadata keep heap and index visibility atomic.
+A standalone BTree is not useful until table writes and catalog metadata keep heap and index visibility atomic.
 
 ### Test contract
 
@@ -59,11 +59,11 @@ A failure means the implementation crossed the semantic, ordering, ownership, or
 
 ### Basic concepts
 
-The central mechanism is published table indexes. A standalone btree is not useful until table writes and catalog metadata keep heap and index visibility atomic.
+The central mechanism is published table indexes. A standalone BTree is not useful until table writes and catalog metadata keep heap and index visibility atomic.
 
 ### Why this mechanism is necessary
 
-A standalone btree is not useful until table writes and catalog metadata keep heap and index visibility atomic. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+A standalone BTree is not useful until table writes and catalog metadata keep heap and index visibility atomic. Without an explicit boundary, every later mechanism would depend on accidental behavior.
 
 ### Runtime mental model
 
@@ -79,7 +79,7 @@ Index creation and row writes publish no partial heap-index state and enforce de
 
 ##### What it is and why it appears
 
-The central mechanism is published table indexes. A standalone btree is not useful until table writes and catalog metadata keep heap and index visibility atomic.
+The central mechanism is published table indexes. A standalone BTree is not useful until table writes and catalog metadata keep heap and index visibility atomic.
 
 ##### Runtime role
 

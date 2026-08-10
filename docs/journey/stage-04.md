@@ -13,7 +13,7 @@ Build precedence-aware sql parser and explain its boundary from an executable co
 
 ### The problem at this point
 
-Tokens need a closed ast whose precedence and statement shapes cannot depend on later execution.
+Tokens need a closed AST whose precedence and statement shapes cannot depend on later execution.
 
 ### Test contract
 
@@ -312,11 +312,11 @@ A failure means the implementation crossed the semantic, ordering, ownership, or
 
 ### Basic concepts
 
-The central mechanism is precedence-aware sql parser. Tokens need a closed ast whose precedence and statement shapes cannot depend on later execution.
+The central mechanism is precedence-aware sql parser. Tokens need a closed AST whose precedence and statement shapes cannot depend on later execution.
 
 ### Why this mechanism is necessary
 
-Tokens need a closed ast whose precedence and statement shapes cannot depend on later execution. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+Tokens need a closed AST whose precedence and statement shapes cannot depend on later execution. Without an explicit boundary, every later mechanism would depend on accidental behavior.
 
 ### Runtime mental model
 
@@ -943,7 +943,7 @@ Parsing is deterministic and rejects trailing or malformed syntax before catalog
 
 **What it is and why it appears**
 
-The central mechanism is precedence-aware sql parser. Tokens need a closed ast whose precedence and statement shapes cannot depend on later execution.
+The central mechanism is precedence-aware sql parser. Tokens need a closed AST whose precedence and statement shapes cannot depend on later execution.
 
 **Runtime role**
 

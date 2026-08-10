@@ -1,11 +1,11 @@
-failure_files = ["tests/unit/maintenance/test_hot.py"]
+failure_files = ["tests/reliability/test_index_rebuild.py", "tests/unit/maintenance/test_hot.py"]
 
 [[blocks]]
 id = "mechanism"
 title_en = "HOT audit closure mechanism"
 title_zh = "HOT 审计闭环机制"
-summary_en = "All HOT decisions use one eligibility rule and the final reconstructed tree matches the accepted implementation."
-summary_zh = "所有 HOT 决策使用同一 Eligibility Rule，最终重建树与验收实现完全一致。"
+summary_en = "One shared TID map resolves every valid disjoint HOT chain in O(N) rebuild work while preserving visibility and cycle checks."
+summary_zh = "一个共享 TID Map 以 O(N) 重建工作解析所有合法且互不相交的 HOT Chain，同时保持 Visibility 与 Cycle Check。"
 files = ["src/minipostgres/index/btree.py", "src/minipostgres/maintenance/hot.py", "src/minipostgres/storage/heap.py", "src/minipostgres/storage/replacer.py", "src/minipostgres/transaction/deadlock.py", "src/minipostgres/transaction/locks.py", "src/minipostgres/transaction/snapshot.py", "src/minipostgres/transaction/status.py", "src/minipostgres/transaction/visibility.py"]
 
 [[blocks]]

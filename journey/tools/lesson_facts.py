@@ -59,19 +59,20 @@ SEEDS = (
     Seed("Maintenance domain closure", "维护领域闭环", "vacuum, HOT fallback, metadata, differential checks, and statement rollback must agree at the public database boundary", "Vacuum、HOT Fallback、Metadata、Differential Check 与 Statement Rollback 必须在公共 Database 边界一致", "Public behavior, maintained metadata, and restart results describe the same committed database state", "公共行为、维护元数据与重启结果描述同一份已提交数据库状态"),
     Seed("Self-join scope rejection", "自连接作用域拒绝", "the miniature binder cannot represent multiple identities for the same relation without aliases", "这个微型 Binder 没有 Alias 时无法表示同一 Relation 的多个 Identity", "Unsupported self-join identity is rejected during binding instead of producing ambiguous column ownership", "不支持的 Self-join Identity 在 Binding 阶段被拒绝，而不是产生含糊 Column Ownership"),
     Seed("Cross-layer correctness regressions", "跨层正确性回归", "index build visibility, repeatable-read conflicts, read-committed rechecks, and int64 overflow cross several otherwise-correct layers", "Index Build Visibility、Repeatable-read Conflict、Read-committed Recheck 与 Int64 Overflow 跨越多个单独正确的层", "Optimization and concurrency never bypass visibility, conflict, type-range, or predicate-recheck contracts", "优化与并发绝不绕过 Visibility、Conflict、Type Range 或 Predicate Recheck 契约"),
-    Seed("HOT audit closure", "HOT 审计闭环", "the final source needs explicit why-level boundaries and one shared HOT predicate without changing finished behavior", "最终源码需要显式的 Why-level 边界与唯一共享 HOT Predicate，同时不改变既有行为", "All HOT decisions use one eligibility rule and the final reconstructed tree matches the accepted implementation", "所有 HOT 决策使用同一 Eligibility Rule，最终重建树与验收实现完全一致"),
+    Seed("HOT audit closure", "HOT 审计闭环", "unclean startup must resolve every HOT chain without rebuilding a predecessor map once per root and falling into O(N²) work", "非正常关闭后的启动必须解析每条 HOT Chain，不能为每个 Root 重建一次 Predecessor Map 并退化成 O(N²)", "One shared TID map resolves every valid disjoint HOT chain in O(N) rebuild work while preserving visibility and cycle checks", "一个共享 TID Map 以 O(N) 重建工作解析所有合法且互不相交的 HOT Chain，同时保持 Visibility 与 Cycle Check"),
 )
 
 
 def _facts(seed: Seed) -> LessonFacts:
+    need_en = seed.need_en[0].upper() + seed.need_en[1:]
     return LessonFacts(
         seed.title_en,
         seed.title_zh,
-        seed.need_en.capitalize() + ".",
+        need_en + ".",
         seed.need_zh + "。",
         f"The focused tests force {seed.title_en.lower()} through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.",
         f"聚焦测试让{seed.title_zh}经历正常路径、边界值、非法输入与本 Stage 可观察的失败边界。",
-        f"The central mechanism is {seed.title_en.lower()}. {seed.need_en.capitalize()}.",
+        f"The central mechanism is {seed.title_en.lower()}. {need_en}.",
         f"核心机制是{seed.title_zh}。{seed.need_zh}。",
         seed.invariant_en + ".",
         seed.invariant_zh + "。",

@@ -18,7 +18,7 @@ Build frozen sql lexer and explain its boundary from an executable counterexampl
 
 ### The problem at this point
 
-Raw sql must become bounded tokens with explicit keyword, literal, identifier, and error rules.
+Raw SQL must become bounded tokens with explicit keyword, literal, identifier, and error rules.
 
 ### Test contract
 
@@ -52,11 +52,11 @@ A failure means the implementation crossed the semantic, ordering, ownership, or
 
 ### Basic concepts
 
-The central mechanism is frozen sql lexer. Raw sql must become bounded tokens with explicit keyword, literal, identifier, and error rules.
+The central mechanism is frozen sql lexer. Raw SQL must become bounded tokens with explicit keyword, literal, identifier, and error rules.
 
 ### Why this mechanism is necessary
 
-Raw sql must become bounded tokens with explicit keyword, literal, identifier, and error rules. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+Raw SQL must become bounded tokens with explicit keyword, literal, identifier, and error rules. Without an explicit boundary, every later mechanism would depend on accidental behavior.
 
 ### Runtime mental model
 
@@ -70,7 +70,7 @@ The lexer consumes every character or raises at its exact unsupported boundary.
 
 ##### What it is and why it appears
 
-The central mechanism is frozen sql lexer. Raw sql must become bounded tokens with explicit keyword, literal, identifier, and error rules.
+The central mechanism is frozen sql lexer. Raw SQL must become bounded tokens with explicit keyword, literal, identifier, and error rules.
 
 ##### Runtime role
 

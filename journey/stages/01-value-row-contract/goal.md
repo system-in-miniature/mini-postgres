@@ -22,7 +22,7 @@ Build value and row contract and explain its boundary from an executable counter
 
 ### The problem at this point
 
-Sql values need closed types, null behavior, checked arithmetic, and schema-shaped rows before any query layer can reason about them.
+SQL values need closed types, NULL behavior, checked arithmetic, and schema-shaped rows before any query layer can reason about them.
 
 ### Test contract
 
@@ -56,11 +56,11 @@ A failure means the implementation crossed the semantic, ordering, ownership, or
 
 ### Basic concepts
 
-The central mechanism is value and row contract. Sql values need closed types, null behavior, checked arithmetic, and schema-shaped rows before any query layer can reason about them.
+The central mechanism is value and row contract. SQL values need closed types, NULL behavior, checked arithmetic, and schema-shaped rows before any query layer can reason about them.
 
 ### Why this mechanism is necessary
 
-Sql values need closed types, null behavior, checked arithmetic, and schema-shaped rows before any query layer can reason about them. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+SQL values need closed types, NULL behavior, checked arithmetic, and schema-shaped rows before any query layer can reason about them. Without an explicit boundary, every later mechanism would depend on accidental behavior.
 
 ### Runtime mental model
 
@@ -75,7 +75,7 @@ Rows own validated values and never let Python coercion silently redefine SQL se
 
 ##### What it is and why it appears
 
-The central mechanism is value and row contract. Sql values need closed types, null behavior, checked arithmetic, and schema-shaped rows before any query layer can reason about them.
+The central mechanism is value and row contract. SQL values need closed types, NULL behavior, checked arithmetic, and schema-shaped rows before any query layer can reason about them.
 
 ##### Runtime role
 

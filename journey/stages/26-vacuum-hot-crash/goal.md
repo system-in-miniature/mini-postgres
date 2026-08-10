@@ -36,7 +36,7 @@ Build vacuum, hot, and crash matrix and explain its boundary from an executable 
 
 ### The problem at this point
 
-Maintenance coordination, dead-version reuse, same-page hot updates, and injected crashes must agree on one recoverable state.
+Maintenance coordination, dead-version reuse, same-page HOT updates, and injected crashes must agree on one recoverable state.
 
 ### Test contract
 
@@ -78,11 +78,11 @@ A failure means the implementation crossed the semantic, ordering, ownership, or
 
 ### Basic concepts
 
-The central mechanism is vacuum, hot, and crash matrix. Maintenance coordination, dead-version reuse, same-page hot updates, and injected crashes must agree on one recoverable state.
+The central mechanism is vacuum, hot, and crash matrix. Maintenance coordination, dead-version reuse, same-page HOT updates, and injected crashes must agree on one recoverable state.
 
 ### Why this mechanism is necessary
 
-Maintenance coordination, dead-version reuse, same-page hot updates, and injected crashes must agree on one recoverable state. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+Maintenance coordination, dead-version reuse, same-page HOT updates, and injected crashes must agree on one recoverable state. Without an explicit boundary, every later mechanism would depend on accidental behavior.
 
 ### Runtime mental model
 
@@ -105,7 +105,7 @@ Vacuum and HOT preserve indexed visibility, and every failpoint recovers to a de
 
 ##### What it is and why it appears
 
-The central mechanism is vacuum, hot, and crash matrix. Maintenance coordination, dead-version reuse, same-page hot updates, and injected crashes must agree on one recoverable state.
+The central mechanism is vacuum, hot, and crash matrix. Maintenance coordination, dead-version reuse, same-page HOT updates, and injected crashes must agree on one recoverable state.
 
 ##### Runtime role
 

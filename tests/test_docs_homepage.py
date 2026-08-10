@@ -1,17 +1,16 @@
-import re
 import unittest
 from pathlib import Path
 
 
 class DocumentationHomepageTest(unittest.TestCase):
-    def test_homepage_is_fully_bilingual(self) -> None:
-        homepage = Path("docs/index.md").read_text(encoding="utf-8")
-        headings = [line for line in homepage.splitlines() if line.startswith("#")]
+    def test_homepages_are_language_separated(self) -> None:
+        english = Path("docs/index.md").read_text(encoding="utf-8")
+        chinese = Path("docs/zh/index.md").read_text(encoding="utf-8")
 
-        self.assertTrue(headings)
-        self.assertTrue(all(" / " in heading for heading in headings))
-        self.assertIn("[Chinese edition / 中文版]", homepage)
-        self.assertGreaterEqual(len(re.findall(r"[\u4e00-\u9fff]", homepage)), 120)
+        self.assertNotRegex(english, r"[\u4e00-\u9fff]")
+        self.assertNotIn("Learning modes", chinese)
+        self.assertIn("Learning modes", english)
+        self.assertIn("学习模式", chinese)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # Stage 30 · HOT audit closure / HOT 审计闭环
 
-<!-- journey: chapter=11 tests_added=1 -->
+<!-- journey: chapter=11 tests_added=2 -->
 
 ## English
 
@@ -26,11 +26,12 @@ Build hot audit closure and explain its boundary from an executable counterexamp
 - `src/minipostgres/transaction/snapshot.py`
 - `src/minipostgres/transaction/status.py`
 - `src/minipostgres/transaction/visibility.py`
+- `tests/reliability/test_index_rebuild.py`
 - `tests/unit/maintenance/test_hot.py`
 
 ### The problem at this point
 
-The final source needs explicit why-level boundaries and one shared hot predicate without changing finished behavior.
+Unclean startup must resolve every HOT chain without rebuilding a predecessor map once per root and falling into O(N²) work.
 
 ### Test contract
 
@@ -38,6 +39,7 @@ The final source needs explicit why-level boundaries and one shared hot predicat
 
 The focused tests force hot audit closure through happy paths, boundary values, invalid inputs, and the Stage's observable failure edges.
 
+<!-- journey-file: tests/reliability/test_index_rebuild.py -->
 <!-- journey-file: tests/unit/maintenance/test_hot.py -->
 #### HOT audit closure test evidence
 
@@ -52,7 +54,7 @@ The focused tests force hot audit closure through happy paths, boundary values, 
 ##### Key test statement
 
 ```python
-assert hot_eligible(
+assert recovered.execute("SELECT COUNT(*) FROM events").rows == ((4,),)
 ```
 
 This assertion binds the observable result to the Stage's state, visibility, or durability boundary rather than merely checking that a call returned.
@@ -63,15 +65,15 @@ A failure means the implementation crossed the semantic, ordering, ownership, or
 
 ### Basic concepts
 
-The central mechanism is hot audit closure. The final source needs explicit why-level boundaries and one shared hot predicate without changing finished behavior.
+The central mechanism is hot audit closure. Unclean startup must resolve every HOT chain without rebuilding a predecessor map once per root and falling into O(N²) work.
 
 ### Why this mechanism is necessary
 
-The final source needs explicit why-level boundaries and one shared hot predicate without changing finished behavior. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+Unclean startup must resolve every HOT chain without rebuilding a predecessor map once per root and falling into O(N²) work. Without an explicit boundary, every later mechanism would depend on accidental behavior.
 
 ### Runtime mental model
 
-All HOT decisions use one eligibility rule and the final reconstructed tree matches the accepted implementation.
+One shared TID map resolves every valid disjoint HOT chain in O(N) rebuild work while preserving visibility and cycle checks.
 
 ### Mechanism blocks
 
@@ -88,15 +90,15 @@ All HOT decisions use one eligibility rule and the final reconstructed tree matc
 
 ##### What it is and why it appears
 
-The central mechanism is hot audit closure. The final source needs explicit why-level boundaries and one shared hot predicate without changing finished behavior.
+The central mechanism is hot audit closure. Unclean startup must resolve every HOT chain without rebuilding a predecessor map once per root and falling into O(N²) work.
 
 ##### Runtime role
 
-All HOT decisions use one eligibility rule and the final reconstructed tree matches the accepted implementation.
+One shared TID map resolves every valid disjoint HOT chain in O(N) rebuild work while preserving visibility and cycle checks.
 
 ##### Statement understanding
 
-The durable boundary is this: all HOT decisions use one eligibility rule and the final reconstructed tree matches the accepted implementation.
+The durable boundary is this: one shared TID map resolves every valid disjoint HOT chain in O(N) rebuild work while preserving visibility and cycle checks.
 
 <!-- journey-file: ARCHITECTURE.md -->
 <!-- journey-file: BEHAVIORAL_CONTRACT.md -->
@@ -115,7 +117,7 @@ Run `uv run pytest -q $(cat journey/stages/30-hot-audit-closure/tests.txt)`, the
 
 ### Durable takeaways
 
-The durable boundary is this: all HOT decisions use one eligibility rule and the final reconstructed tree matches the accepted implementation.
+The durable boundary is this: one shared TID map resolves every valid disjoint HOT chain in O(N) rebuild work while preserving visibility and cycle checks.
 
 ### Explain it in your own words
 
@@ -149,11 +151,12 @@ Explain the failure window this Stage closes, how runtime state changes, and whi
 - `src/minipostgres/transaction/snapshot.py`
 - `src/minipostgres/transaction/status.py`
 - `src/minipostgres/transaction/visibility.py`
+- `tests/reliability/test_index_rebuild.py`
 - `tests/unit/maintenance/test_hot.py`
 
 ### 当前遇到的问题
 
-最终源码需要显式的 Why-level 边界与唯一共享 HOT Predicate，同时不改变既有行为。
+非正常关闭后的启动必须解析每条 HOT Chain，不能为每个 Root 重建一次 Predecessor Map 并退化成 O(N²)。
 
 ### 测试契约
 
@@ -161,6 +164,7 @@ Explain the failure window this Stage closes, how runtime state changes, and whi
 
 聚焦测试让HOT 审计闭环经历正常路径、边界值、非法输入与本 Stage 可观察的失败边界。
 
+<!-- journey-file: tests/reliability/test_index_rebuild.py -->
 <!-- journey-file: tests/unit/maintenance/test_hot.py -->
 #### HOT 审计闭环测试证据
 
@@ -175,7 +179,7 @@ Explain the failure window this Stage closes, how runtime state changes, and whi
 ##### 关键测试语句
 
 ```python
-assert hot_eligible(
+assert recovered.execute("SELECT COUNT(*) FROM events").rows == ((4,),)
 ```
 
 这条断言把可观察结果与本 Stage 的状态、可见性或持久性边界绑定，而不只检查调用返回。
@@ -186,15 +190,15 @@ assert hot_eligible(
 
 ### 基本概念
 
-核心机制是HOT 审计闭环。最终源码需要显式的 Why-level 边界与唯一共享 HOT Predicate，同时不改变既有行为。
+核心机制是HOT 审计闭环。非正常关闭后的启动必须解析每条 HOT Chain，不能为每个 Root 重建一次 Predecessor Map 并退化成 O(N²)。
 
 ### 为什么需要这个机制
 
-最终源码需要显式的 Why-level 边界与唯一共享 HOT Predicate，同时不改变既有行为。 若不建立明确边界，后续机制只能依赖偶然行为。
+非正常关闭后的启动必须解析每条 HOT Chain，不能为每个 Root 重建一次 Predecessor Map 并退化成 O(N²)。 若不建立明确边界，后续机制只能依赖偶然行为。
 
 ### 运行时心智模型
 
-所有 HOT 决策使用同一 Eligibility Rule，最终重建树与验收实现完全一致。
+一个共享 TID Map 以 O(N) 重建工作解析所有合法且互不相交的 HOT Chain，同时保持 Visibility 与 Cycle Check。
 
 ### 机制板块
 
@@ -211,15 +215,15 @@ assert hot_eligible(
 
 ##### 是什么，为什么现在需要
 
-核心机制是HOT 审计闭环。最终源码需要显式的 Why-level 边界与唯一共享 HOT Predicate，同时不改变既有行为。
+核心机制是HOT 审计闭环。非正常关闭后的启动必须解析每条 HOT Chain，不能为每个 Root 重建一次 Predecessor Map 并退化成 O(N²)。
 
 ##### 在运行时做什么
 
-所有 HOT 决策使用同一 Eligibility Rule，最终重建树与验收实现完全一致。
+一个共享 TID Map 以 O(N) 重建工作解析所有合法且互不相交的 HOT Chain，同时保持 Visibility 与 Cycle Check。
 
 ##### 关键语句理解
 
-真正要守住的边界是：所有 HOT 决策使用同一 Eligibility Rule，最终重建树与验收实现完全一致。
+真正要守住的边界是：一个共享 TID Map 以 O(N) 重建工作解析所有合法且互不相交的 HOT Chain，同时保持 Visibility 与 Cycle Check。
 
 <!-- journey-file: ARCHITECTURE.md -->
 <!-- journey-file: BEHAVIORAL_CONTRACT.md -->
@@ -238,7 +242,7 @@ assert hot_eligible(
 
 ### 需要真正记住的内容
 
-真正要守住的边界是：所有 HOT 决策使用同一 Eligibility Rule，最终重建树与验收实现完全一致。
+真正要守住的边界是：一个共享 TID Map 以 O(N) 重建工作解析所有合法且互不相交的 HOT Chain，同时保持 Visibility 与 Cycle Check。
 
 ### 用自己的话讲清楚
 

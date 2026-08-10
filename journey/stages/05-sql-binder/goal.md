@@ -19,7 +19,7 @@ Build name and type binding and explain its boundary from an executable countere
 
 ### The problem at this point
 
-An ast still contains unresolved names and unproved operand types.
+An AST still contains unresolved names and unproved operand types.
 
 ### Test contract
 
@@ -54,11 +54,11 @@ A failure means the implementation crossed the semantic, ordering, ownership, or
 
 ### Basic concepts
 
-The central mechanism is name and type binding. An ast still contains unresolved names and unproved operand types.
+The central mechanism is name and type binding. An AST still contains unresolved names and unproved operand types.
 
 ### Why this mechanism is necessary
 
-An ast still contains unresolved names and unproved operand types. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+An AST still contains unresolved names and unproved operand types. Without an explicit boundary, every later mechanism would depend on accidental behavior.
 
 ### Runtime mental model
 
@@ -72,7 +72,7 @@ Binding resolves every reference in scope and produces typed expressions before 
 
 ##### What it is and why it appears
 
-The central mechanism is name and type binding. An ast still contains unresolved names and unproved operand types.
+The central mechanism is name and type binding. An AST still contains unresolved names and unproved operand types.
 
 ##### Runtime role
 

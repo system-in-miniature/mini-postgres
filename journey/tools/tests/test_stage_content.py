@@ -106,3 +106,12 @@ def test_each_locale_explains_every_diff_file_without_interview_framing() -> Non
             assert len(markers) == len(set(markers)), (item.number, language)
             assert "interview" not in body.lower()
             assert "面试" not in body
+
+
+def test_final_stage_teaches_the_benchmark_discovered_linear_rebuild() -> None:
+    goal = (STAGES_ROOT / "30-hot-audit-closure" / "goal.md").read_text()
+
+    assert "O(N²)" in localized(goal, "en")
+    assert "shared TID map" in localized(goal, "en")
+    assert "O(N²)" in localized(goal, "zh")
+    assert "共享 TID Map" in localized(goal, "zh")

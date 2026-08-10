@@ -37,4 +37,4 @@ For an editor-focused diff, run `python -m journey.tools.build_journey study N` 
 | [27](stage-27.md) | Maintenance domain closure | 9 | [11](../tutorial/11-vacuum-hot.md) |
 | [28](stage-28.md) | Self-join scope rejection | 2 | [2](../tutorial/02-sql-frontend.md) |
 | [29](stage-29.md) | Cross-layer correctness regressions | 7 | [12](../tutorial/12-testing-methodology.md) |
-| [30](stage-30.md) | HOT audit closure | 1 | [11](../tutorial/11-vacuum-hot.md) |
+| [30](stage-30.md) | HOT audit closure | 2 | [11](../tutorial/11-vacuum-hot.md) |

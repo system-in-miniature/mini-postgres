@@ -23,7 +23,7 @@ Build versioned heap visibility and explain its boundary from an executable coun
 
 ### The problem at this point
 
-Logical updates and deletes must create mvcc versions without exposing invisible tuples through scans or indexes.
+Logical updates and deletes must create MVCC versions without exposing invisible tuples through scans or indexes.
 
 ### Test contract
 
@@ -57,11 +57,11 @@ A failure means the implementation crossed the semantic, ordering, ownership, or
 
 ### Basic concepts
 
-The central mechanism is versioned heap visibility. Logical updates and deletes must create mvcc versions without exposing invisible tuples through scans or indexes.
+The central mechanism is versioned heap visibility. Logical updates and deletes must create MVCC versions without exposing invisible tuples through scans or indexes.
 
 ### Why this mechanism is necessary
 
-Logical updates and deletes must create mvcc versions without exposing invisible tuples through scans or indexes. Without an explicit boundary, every later mechanism would depend on accidental behavior.
+Logical updates and deletes must create MVCC versions without exposing invisible tuples through scans or indexes. Without an explicit boundary, every later mechanism would depend on accidental behavior.
 
 ### Runtime mental model
 
@@ -81,7 +81,7 @@ Readers recheck visibility, writers preserve version chains, and abort restores 
 
 ##### What it is and why it appears
 
-The central mechanism is versioned heap visibility. Logical updates and deletes must create mvcc versions without exposing invisible tuples through scans or indexes.
+The central mechanism is versioned heap visibility. Logical updates and deletes must create MVCC versions without exposing invisible tuples through scans or indexes.
 
 ##### Runtime role
 
