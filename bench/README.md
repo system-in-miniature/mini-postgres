@@ -1,7 +1,8 @@
 # MiniPostgres reproducible benchmarks
 
-These are **教学实现的方法论基准，不与生产系统对比绝对值**. The useful
-claims are paired relative comparisons within MiniPostgres on one disclosed
+These are methodology benchmarks for an educational implementation, not
+absolute-value comparisons with production systems. The useful claims are
+paired relative comparisons within MiniPostgres on one disclosed
 machine; absolute timings are records, not PostgreSQL or production-system
 comparisons.
 
@@ -23,3 +24,5 @@ Read [PROTOCOL.md](PROTOCOL.md) before interpreting the results. It documents
 the warmup/formal counts, statistics, SIGKILL boundary, environment snapshot,
 time budget, and the bench-only physical fixture boundary used to keep 100k-row
 setup inside that budget.
+
+> [Chinese edition](README.zh-CN.md)

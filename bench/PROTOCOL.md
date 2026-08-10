@@ -2,11 +2,10 @@
 
 ## Positioning
 
-This is **教学实现的方法论基准，不与生产系统对比绝对值**: a methodology
-benchmark for a single-machine Python teaching kernel, not an absolute-value
-comparison with PostgreSQL or any production database. Relative comparisons
-within the same run are the primary output. Absolute numbers are retained only
-as machine-local records.
+This is a methodology benchmark for a single-machine Python teaching kernel,
+not an absolute-value comparison with PostgreSQL or any production database.
+Relative comparisons within the same run are the primary output. Absolute
+numbers are retained only as machine-local records.
 
 ## Environment disclosure
 
@@ -76,3 +75,5 @@ Run the focused experiment from the repository root with
 `report.md` under `bench/results/<date>/`. No source code is modified by a run;
 temporary databases live under the system temporary directory and are removed
 after each experiment.
+
+> [Chinese edition](PROTOCOL.zh-CN.md)

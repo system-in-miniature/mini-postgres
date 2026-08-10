@@ -93,6 +93,20 @@ uv run pytest -q
 git diff --check
 ```
 
+在 2026-08-10 的当前候选提交上，完整测试为 **287 passed、1 skipped、0 failed**；
+唯一跳过项是未配置 DSN 的可选 PostgreSQL 18 差分验证。
+
+带日期的本地方法论基准记录了：同一份 100,000 行逻辑数据上，B+Tree 等值查询
+相对顺序扫描快 **5,816.64 倍**；更关键的是，基准发现非正常启动会为每个 HOT
+Chain Root 重建 Predecessor Map，使工作量退化为 **O(N²)**。复用一个共享 TID Map
+后，该重建降为 **O(N)**；10,000 行完整 `Database.open` 从 **449,100.98 ms**
+降至 **71.83 ms（6,252.45 倍）**，且公开 `COUNT(*)` 仍验证全部行数。
+
+参见[中文基准入口](bench/README.zh-CN.md)、
+[中文协议](bench/PROTOCOL.zh-CN.md)和
+[原始数据与英文报告](bench/results/2026-08-04-postfix/report.md)。这些数字只表示
+同机、同夹具、同协议下的教学内核方法论结果，不代表 PostgreSQL 或生产容量。
+
 参见 [SCOPE.md](docs/zh/SCOPE.md)、
 [ARCHITECTURE.md](docs/zh/ARCHITECTURE.md)、
 [BEHAVIORAL_CONTRACT.md](BEHAVIORAL_CONTRACT.md) 和
